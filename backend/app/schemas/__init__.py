@@ -26,6 +26,9 @@ from app.schemas.code import (
     GeneratedCodeResponse,
     GeneratedCodeWithFiles,
     CodeGenerationSummary,
+    CodeReviewSubmit,
+    CodeReviewResponse,
+    CodeRegenerationRequest,
 )
 from app.schemas.yaml_schema import (
     PickBasicYAMLSchema,
@@ -62,6 +65,9 @@ __all__ = [
     "GeneratedCodeResponse",
     "GeneratedCodeWithFiles",
     "CodeGenerationSummary",
+    "CodeReviewSubmit",
+    "CodeReviewResponse",
+    "CodeRegenerationRequest",
     # YAML schemas
     "PickBasicYAMLSchema",
     "YAMLMetadata",

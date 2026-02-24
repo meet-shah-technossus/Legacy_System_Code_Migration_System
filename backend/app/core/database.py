@@ -55,7 +55,11 @@ def init_db():
         Review,
         ReviewComment,
         GeneratedCode,
-        AuditLog
+        CodeReview,
+        AuditLog,
+        Metric,
+        LineComment,
     )
-    
+    from app.models.user import User  # noqa: F401 — registers users table
+
     Base.metadata.create_all(bind=engine)

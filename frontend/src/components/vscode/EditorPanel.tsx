@@ -1,0 +1,1222 @@
+import {
+  Box,
+  Flex,
+  Icon,
+  IconButton,
+  Spinner,
+  Text,
+  Tooltip,
+  VStack,
+  Badge,
+  HStack,
+  Button,
+  Modal,
+  ModalOverlay,
+  ModalContent,
+  ModalHeader,
+  ModalBody,
+  ModalFooter,
+  ModalCloseButton,
+  Textarea,
+} from '@chakra-ui/react';
+import { useState, useRef, useEffect } from 'react';
+import type { ComponentType } from 'react';
+import { createPortal } from 'react-dom';
+import { Global } from '@emotion/react';
+import Editor, { DiffEditor } from '@monaco-editor/react';
+import type { OnMount } from '@monaco-editor/react';
+import {
+  FiCode,
+  FiFileText,
+  FiX,
+  FiDownload,
+  FiExternalLink,
+  FiPlay,
+  FiAlertTriangle,
+  FiChevronRight,
+  FiCheckCircle,
+  FiGitMerge,
+  FiRotateCcw,
+  FiMessageCircle,
+} from 'react-icons/fi';
+import { useNavigate } from 'react-router-dom';
+import { VS, useVSColors } from './vscodeTheme';
+import { useJob, useParentJob, useJobWithSource, useAddLineComment } from '../../hooks/useJobs';
+import { useLatestYAML } from '../../hooks/useYaml';
+import { useGeneratedCode } from '../../hooks/useCode';
+import { useGenerateYAML } from '../../hooks/useYaml';
+import { useGenerateCode } from '../../hooks/useCode';
+import { useSubmitReview } from '../../hooks/useReviews';
+import { useAuthStore } from '../../store/authStore';
+import { stateLabel, monacoLanguage, languageLabel } from '../../utils/format';
+import type { MigrationJob, TargetLanguage, PendingLineComment, LineCommentCreate, ReviewDecision } from '../../types';
+import { codeApi } from '../../services/codeApi';
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+type EditorTab = 'yaml' | 'code';
+
+const LANG_EXT: Record<TargetLanguage, string> = {
+  PYTHON:     '.py',
+  TYPESCRIPT: '.ts',
+  JAVASCRIPT: '.js',
+  JAVA:       '.java',
+  CSHARP:     '.cs',
+};
+
+const LANG_COLOR: Record<TargetLanguage, string> = {
+  PYTHON:     '#3572A5',
+  TYPESCRIPT: '#3178c6',
+  JAVASCRIPT: '#f1e05a',
+  JAVA:       '#b07219',
+  CSHARP:     '#178600',
+};
+
+function codeFilename(job: MigrationJob): string {
+  const base = job.source_filename
+    ? job.source_filename.replace(/\.[^.]+$/, '')
+    : job.job_name ?? `job-${job.id}`;
+  if (job.target_language) return base + LANG_EXT[job.target_language];
+  return base + '.code';
+}
+
+function yamlFilename(job: MigrationJob): string {
+  const base = job.source_filename
+    ? job.source_filename.replace(/\.[^.]+$/, '')
+    : `job-${job.id}`;
+  return base + '.schema.yaml';
+}
+
+// ─── Welcome Screen ───────────────────────────────────────────────────────────
+
+function WelcomeScreen() {
+  const colors = useVSColors();
+  const navigate = useNavigate();
+  return (
+    <VStack flex={1} justify="center" align="center" spacing={6} h="100%" userSelect="none">
+      <Icon as={FiCode as ComponentType} boxSize={20} color={colors.fgMuted} opacity={0.1} />
+
+      <VStack spacing={2}>
+        <Text fontSize="22px" fontWeight="300" color={colors.fg} opacity={0.35} letterSpacing="-0.02em">
+          Legacy Migration Studio
+        </Text>
+        <Text fontSize="13px" color={colors.fgMuted} opacity={0.4}>
+          Select a job from the Explorer to open it here
+        </Text>
+      </VStack>
+
+      <VStack spacing="6px" mt={2}>
+        {[
+          { key: '⌘P',  desc: 'Go to job…',            action: () => {} },
+          { key: '⌘N',  desc: 'New migration job',     action: () => navigate('/jobs/new') },
+          { key: '⌘⇧A', desc: 'View all jobs',         action: () => navigate('/jobs') },
+        ].map(({ key, desc, action }) => (
+          <Flex key={key} align="center" gap={3} opacity={0.3} cursor="pointer" _hover={{ opacity: 0.6 }} onClick={action}>
+            <Box
+              px="7px" py="2px"
+              bg={colors.input}
+              border={`1px solid ${colors.inputBorder}`}
+              borderRadius="3px"
+            >
+              <Text fontSize="10px" fontFamily="mono" color={colors.fg}>{key}</Text>
+            </Box>
+            <Text fontSize="12px" color={colors.fgMuted}>{desc}</Text>
+          </Flex>
+        ))}
+      </VStack>
+    </VStack>
+  );
+}
+
+// ─── Tab ─────────────────────────────────────────────────────────────────────
+
+interface TabProps {
+  label: string;
+  iconColor: string;
+  isActive: boolean;
+  isModified?: boolean;
+  onClick: () => void;
+}
+
+function Tab({ label, iconColor, isActive, isModified, onClick }: TabProps) {
+  const colors = useVSColors();
+  const [hovered, setHovered] = useState(false);
+  return (
+    <Flex
+      align="center"
+      h={`${VS.size.tabBar}px`}
+      px="12px"
+      gap="6px"
+      cursor="pointer"
+      bg={isActive ? colors.tabActive : colors.tabInactive}
+      borderRight={`1px solid ${colors.panelBorder}`}
+      borderBottom={isActive ? `1px solid ${colors.tabActive}` : `1px solid ${colors.panelBorder}`}
+      borderTop={isActive ? `1px solid ${colors.tabActiveBorder}` : '1px solid transparent'}
+      color={isActive ? colors.fgActive : colors.fgMuted}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onClick={onClick}
+      flexShrink={0}
+      userSelect="none"
+      position="relative"
+    >
+      {/* language dot */}
+      <Box w="8px" h="8px" borderRadius="full" bg={iconColor} flexShrink={0} />
+
+      <Text fontSize="13px" whiteSpace="nowrap">
+        {label}
+        {isModified && <Box as="span" color={colors.fgMuted}> ●</Box>}
+      </Text>
+
+      {/* close — only on hover */}
+      {hovered && (
+        <Box
+          as="button"
+          ml="2px"
+          p="1px"
+          borderRadius="2px"
+          color={colors.fgMuted}
+          _hover={{ bg: colors.hover, color: colors.fgActive }}
+          onClick={(e: React.MouseEvent) => e.stopPropagation()}
+        >
+          <Icon as={FiX as ComponentType} boxSize="10px" />
+        </Box>
+      )}
+    </Flex>
+  );
+}
+
+// ─── Breadcrumb ───────────────────────────────────────────────────────────────
+
+interface BreadcrumbBarProps {
+  segments: string[];
+}
+
+function BreadcrumbBar({ segments }: BreadcrumbBarProps) {
+  const colors = useVSColors();
+  return (
+    <Flex
+      h="24px"
+      align="center"
+      px={3}
+      gap="4px"
+      bg={colors.editor}
+      borderBottom={`1px solid ${colors.sidebarBorder}`}
+      flexShrink={0}
+      overflow="hidden"
+    >
+      {segments.map((seg, i) => (
+        <Flex key={i} align="center" gap="4px">
+          {i > 0 && <Icon as={FiChevronRight as ComponentType} boxSize="9px" color={colors.fgMuted} />}
+          <Text
+            fontSize="11px"
+            color={i === segments.length - 1 ? colors.fg : colors.fgMuted}
+            overflow="hidden"
+            textOverflow="ellipsis"
+            whiteSpace="nowrap"
+          >
+            {seg}
+          </Text>
+        </Flex>
+      ))}
+    </Flex>
+  );
+}
+
+// ─── Editor Info Bar ──────────────────────────────────────────────────────────
+
+interface EditorInfoBarProps {
+  job: MigrationJob;
+  lineCount?: number;
+  charCount?: number;
+  language: string;
+}
+
+function EditorInfoBar({ job, lineCount, charCount, language }: EditorInfoBarProps) {
+  const colors = useVSColors();
+  return (
+    <Flex
+      h="22px"
+      align="center"
+      justify="space-between"
+      px={3}
+      bg={colors.tabBar}
+      borderTop={`1px solid ${colors.panelBorder}`}
+      flexShrink={0}
+      userSelect="none"
+    >
+      <HStack spacing={4}>
+        <HStack spacing={1}>
+          <Box w="6px" h="6px" borderRadius="full" bg={colors.statusBar} />
+          <Text fontSize="11px" color={colors.fgMuted}>
+            {stateLabel(job.current_state)}
+          </Text>
+        </HStack>
+        <Text fontSize="11px" color={colors.fgMuted}>
+          Job #{job.id} · {job.job_type === 'YAML_CONVERSION' ? 'Job 1' : 'Job 2'}
+        </Text>
+      </HStack>
+      <HStack spacing={4}>
+        {lineCount != null && (
+          <Text fontSize="11px" color={colors.fgMuted}>Ln {lineCount}</Text>
+        )}
+        {charCount != null && (
+          <Text fontSize="11px" color={colors.fgMuted}>{charCount} chars</Text>
+        )}
+        <Text fontSize="11px" color={colors.fgMuted}>{language}</Text>
+        <Text fontSize="11px" color={colors.fgMuted}>UTF-8</Text>
+      </HStack>
+    </Flex>
+  );
+}
+
+// ─── GenerateCTA ──────────────────────────────────────────────────────────────
+
+interface GenerateCTAProps {
+  job: MigrationJob;
+}
+
+function GenerateCTA({ job }: GenerateCTAProps) {
+  const colors = useVSColors();
+  const navigate  = useNavigate();
+  const { user }  = useAuthStore();
+  const performer = user?.username ?? 'system';
+
+  const genYAML = useGenerateYAML(job.id);
+  const genCode = useGenerateCode(job.id);
+
+  const isJob1 = job.job_type === 'YAML_CONVERSION';
+  const label  = isJob1 ? 'Generate YAML' : 'Generate Code';
+  const isLoading = genYAML.isPending || genCode.isPending;
+
+  const handleGenerate = () => {
+    if (isJob1) {
+      genYAML.mutate({ performed_by: performer });
+    } else if (job.target_language) {
+      genCode.mutate({ target_language: job.target_language, performed_by: performer, use_llm: true });
+    }
+  };
+
+  return (
+    <VStack flex={1} justify="center" align="center" spacing={5} h="100%" userSelect="none">
+      <Icon as={FiFileText as ComponentType} boxSize={14} color={colors.fgMuted} opacity={0.15} />
+      <VStack spacing={1}>
+        <Text fontSize="16px" color={colors.fg} opacity={0.5} fontWeight="300">
+          No content yet
+        </Text>
+        <Text fontSize="12px" color={colors.fgMuted} opacity={0.45}>
+          {isJob1 ? 'Run the LLM to generate YAML from your Pick Basic source' : 'Run the LLM to generate code from the approved YAML'}
+        </Text>
+      </VStack>
+      <Flex gap={3} mt={2}>
+        <Button
+          size="sm"
+          leftIcon={<Icon as={FiPlay as ComponentType} />}
+          colorScheme="blue"
+          variant="solid"
+          isLoading={isLoading}
+          onClick={handleGenerate}
+          fontSize="12px"
+          h="28px"
+        >
+          {label}
+        </Button>
+        <Button
+          size="sm"
+          leftIcon={<Icon as={FiExternalLink as ComponentType} />}
+          variant="outline"
+          fontSize="12px"
+          h="28px"
+          color={colors.fgMuted}
+          borderColor={colors.inputBorder}
+          _hover={{ color: colors.fgActive, borderColor: colors.fg }}
+          onClick={() => navigate(`/jobs/${job.id}`)}
+        >
+          Open Job Detail
+        </Button>
+      </Flex>
+    </VStack>
+  );
+}
+
+// ─── ErrorState ───────────────────────────────────────────────────────────────
+
+function ErrorState({ message }: { message: string }) {
+  const colors = useVSColors();
+  return (
+    <VStack flex={1} justify="center" align="center" spacing={3} h="100%">
+      <Icon as={FiAlertTriangle as ComponentType} boxSize={8} color="#fc8181" opacity={0.5} />
+      <Text fontSize="13px" color={colors.fgMuted} opacity={0.6}>{message}</Text>
+    </VStack>
+  );
+}
+
+// ─── LoadingState ─────────────────────────────────────────────────────────────
+
+function LoadingState() {
+  const colors = useVSColors();
+  return (
+    <Flex flex={1} justify="center" align="center" h="100%">
+      <Spinner size="md" color={colors.fgMuted} thickness="1.5px" />
+    </Flex>
+  );
+}
+
+// ─── ReviewActionsBar ─────────────────────────────────────────────────────────
+
+interface ReviewActionsBarProps {
+  isJob2: boolean;
+  isPending: boolean;
+  onInstantApprove: () => void;
+  onOpenModal: (decision: ReviewDecision) => void;
+}
+
+function ReviewActionsBar({ isJob2, isPending, onInstantApprove, onOpenModal }: ReviewActionsBarProps) {
+  const colors = useVSColors();
+  if (isJob2) {
+    return (
+      <Flex
+        h="32px"
+        align="center"
+        px={3}
+        gap={2}
+        bg="rgba(0,0,0,0.15)"
+        borderBottom={`1px solid ${colors.panelBorder}`}
+        flexShrink={0}
+      >
+        <Text fontSize="10px" color={colors.fgMuted} opacity={0.5} mr={1} userSelect="none">
+          Code review:
+        </Text>
+        <Button
+          size="xs"
+          h="22px"
+          px="10px"
+          fontSize="11px"
+          leftIcon={<Icon as={FiCheckCircle as ComponentType} boxSize="11px" />}
+          colorScheme="teal"
+          variant="solid"
+          isLoading={isPending}
+          onClick={onInstantApprove}
+        >
+          Accept Code
+        </Button>
+        <Button
+          size="xs"
+          h="22px"
+          px="10px"
+          fontSize="11px"
+          leftIcon={<Icon as={FiRotateCcw as ComponentType} boxSize="11px" />}
+          colorScheme="red"
+          variant="outline"
+          isLoading={isPending}
+          onClick={() => onOpenModal('CODE_REJECT_REGENERATE')}
+          color="#fc8181"
+          borderColor="rgba(252,129,129,0.4)"
+          _hover={{ bg: 'rgba(252,129,129,0.1)' }}
+        >
+          Reject Code
+        </Button>
+      </Flex>
+    );
+  }
+
+  return (
+    <Flex
+      h="32px"
+      align="center"
+      px={3}
+      gap={2}
+      bg="rgba(0,0,0,0.15)"
+      borderBottom={`1px solid ${colors.panelBorder}`}
+      flexShrink={0}
+    >
+      <Text fontSize="10px" color={colors.fgMuted} opacity={0.5} mr={1} userSelect="none">
+        YAML review:
+      </Text>
+      <Button
+        size="xs"
+        h="22px"
+        px="10px"
+        fontSize="11px"
+        leftIcon={<Icon as={FiCheckCircle as ComponentType} boxSize="11px" />}
+        colorScheme="green"
+        variant="solid"
+        isLoading={isPending}
+        onClick={onInstantApprove}
+      >
+        Approve
+      </Button>
+      <Button
+        size="xs"
+        h="22px"
+        px="10px"
+        fontSize="11px"
+        leftIcon={<Icon as={FiMessageCircle as ComponentType} boxSize="11px" />}
+        colorScheme="orange"
+        variant="outline"
+        isLoading={isPending}
+        onClick={() => onOpenModal('APPROVE_WITH_COMMENTS')}
+        color="#f6ad55"
+        borderColor="rgba(246,173,85,0.4)"
+        _hover={{ bg: 'rgba(246,173,85,0.08)' }}
+      >
+        Approve w/ Comments
+      </Button>
+      <Button
+        size="xs"
+        h="22px"
+        px="10px"
+        fontSize="11px"
+        leftIcon={<Icon as={FiRotateCcw as ComponentType} boxSize="11px" />}
+        colorScheme="red"
+        variant="outline"
+        isLoading={isPending}
+        onClick={() => onOpenModal('REJECT_REGENERATE')}
+        color="#fc8181"
+        borderColor="rgba(252,129,129,0.4)"
+        _hover={{ bg: 'rgba(252,129,129,0.1)' }}
+      >
+        Reject &amp; Regenerate
+      </Button>
+    </Flex>
+  );
+}
+
+
+// ─── MonacoView ───────────────────────────────────────────────────────────────
+
+interface MonacoViewProps {
+  content: string;
+  language: string;
+  onMetrics?: (lines: number, chars: number) => void;
+  /** Pending (unsaved) comments for this tab only */
+  pendingLineComments: PendingLineComment[];
+  /** Which code surface this editor shows */
+  codeType: 'yaml' | 'generated_code';
+  onAddLineComment: (c: PendingLineComment) => void;
+}
+
+/**
+ * Glyph-margin CSS injected once into the page.
+ * `.lms-comment-dot` renders an amber dot on commented lines.
+ */
+const GLYPH_CSS = `
+  .lms-comment-dot {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .lms-comment-dot::before {
+    content: '●';
+    color: #f59e0b;
+    font-size: 9px;
+    line-height: 1;
+  }
+`;
+
+function MonacoView({ content, language, onMetrics, pendingLineComments, codeType, onAddLineComment }: MonacoViewProps) {
+  const colors = useVSColors();
+  /* ── refs ─────────────────────────────────────────────────────── */
+  const editorRef       = useRef<Parameters<OnMount>[0] | null>(null);
+  const decorationsRef  = useRef<ReturnType<Parameters<OnMount>[0]['createDecorationsCollection']> | null>(null);
+  const viewZoneIdRef   = useRef<string | null>(null);
+  const commentDomRef   = useRef<HTMLDivElement | null>(null);
+  const containerRef    = useRef<HTMLDivElement>(null);
+
+  /* ── local state ─────────────────────────────────────────────── */
+  const [hoverLine,       setHoverLine]       = useState<number | null>(null);
+  const [hoverY,          setHoverY]          = useState<number>(0);
+  const [commentFormLine, setCommentFormLine] = useState<number | null>(null);
+  const [commentText,     setCommentText]     = useState('');
+
+  /* ── glyph-margin decorations (amber dot on commented lines) ─── */
+  useEffect(() => {
+    const ed = editorRef.current;
+    if (!ed || !decorationsRef.current) return;
+    // Need monaco Range — pull it from the editor's own model API
+    const model = ed.getModel();
+    if (!model) return;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const monacoGlobal = (window as any).monaco;
+    if (!monacoGlobal) return;
+
+    decorationsRef.current.set(
+      pendingLineComments.map(c => ({
+        range: new monacoGlobal.Range(c.lineNumber, 1, c.lineNumber, 1),
+        options: {
+          glyphMarginClassName: 'lms-comment-dot',
+          glyphMarginHoverMessage: { value: `📌 *Line ${c.lineNumber}:* ${c.text}` },
+        },
+      }))
+    );
+  }, [pendingLineComments]);
+
+  /* ── view zone for inline comment form ───────────────────────── */
+  useEffect(() => {
+    const ed = editorRef.current;
+    if (!ed) return;
+
+    ed.changeViewZones(accessor => {
+      // Always remove previous zone first
+      if (viewZoneIdRef.current) {
+        accessor.removeZone(viewZoneIdRef.current);
+        viewZoneIdRef.current = null;
+        commentDomRef.current = null;
+      }
+
+      if (commentFormLine != null) {
+        const domNode = document.createElement('div');
+        commentDomRef.current = domNode;
+        const id = accessor.addZone({
+          afterLineNumber: commentFormLine,
+          heightInPx: 92,
+          domNode,
+          suppressMouseDown: true,
+        });
+        viewZoneIdRef.current = id;
+      }
+    });
+
+    // Force layout to reflow view zone
+    editorRef.current?.layout();
+  }, [commentFormLine]);
+
+  /* ── handlers ────────────────────────────────────────────────── */
+  const openForm = (lineNumber: number, y: number) => {
+    setCommentFormLine(lineNumber);
+    setHoverY(y);
+    setHoverLine(null);
+    setCommentText('');
+  };
+
+  const cancelForm = () => {
+    setCommentFormLine(null);
+    setCommentText('');
+  };
+
+  const submitComment = () => {
+    if (!commentText.trim() || commentFormLine == null) return;
+    onAddLineComment({
+      id: crypto.randomUUID(),
+      lineNumber: commentFormLine,
+      text: commentText.trim(),
+      codeType,
+    });
+    setCommentText('');
+    setCommentFormLine(null);
+  };
+
+  /* ── onMount ─────────────────────────────────────────────────── */
+  const handleMount: OnMount = (editor) => {
+    editorRef.current = editor;
+
+    // Metrics
+    const lineCount = editor.getModel()?.getLineCount() ?? 0;
+    onMetrics?.(lineCount, content.length);
+
+    // Decorations collection for glyph margin dots
+    decorationsRef.current = editor.createDecorationsCollection([]);
+
+    // Gutter hover → show + button
+    //   MouseTargetType.GUTTER_LINE_NUMBERS = 3
+    //   MouseTargetType.GUTTER_GLYPH_MARGIN = 2
+    editor.onMouseMove(e => {
+      const { type, position } = e.target as { type: number; position?: { lineNumber: number } };
+      if ((type === 3 || type === 2) && position) {
+        // e.event.posy is clientY; subtract container top to get editor-relative Y
+        const rect = containerRef.current?.getBoundingClientRect();
+        const relY = rect ? e.event.posy - rect.top : e.event.posy;
+        setHoverLine(position.lineNumber);
+        setHoverY(relY);
+      } else {
+        setHoverLine(null);
+      }
+    });
+
+    editor.onMouseLeave(() => setHoverLine(null));
+  };
+
+  /* ── render ──────────────────────────────────────────────────── */
+  return (
+    <>
+      {/* Inject glyph-margin dot CSS once */}
+      <Global styles={GLYPH_CSS} />
+
+      <Box ref={containerRef} flex={1} overflow="hidden" minH={0} position="relative">
+        <Editor
+          height="100%"
+          language={language}
+          value={content}
+          theme="vs-dark"
+          options={{
+            readOnly: true,
+            minimap: { enabled: true, scale: 1 },
+            fontSize: 13,
+            fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
+            fontLigatures: true,
+            lineNumbers: 'on',
+            renderLineHighlight: 'line',
+            scrollBeyondLastLine: false,
+            wordWrap: 'off',
+            smoothScrolling: true,
+            cursorBlinking: 'blink',
+            folding: true,
+            glyphMargin: true,   // ← enabled for comment dots + hover button
+            contextmenu: false,
+            scrollbar: {
+              vertical: 'auto',
+              horizontal: 'auto',
+              verticalScrollbarSize: 6,
+              horizontalScrollbarSize: 6,
+            },
+            padding: { top: 8 },
+            domReadOnly: true,
+          }}
+          onMount={handleMount}
+        />
+
+        {/* ── + button: shown when hovering a gutter line number ── */}
+        {hoverLine != null && commentFormLine == null && (
+          <Box
+            position="absolute"
+            left="2px"
+            top={`${hoverY - 10}px`}
+            zIndex={10}
+            w="20px"
+            h="20px"
+            borderRadius="3px"
+            bg={colors.statusBar}
+            display="flex"
+            alignItems="center"
+            justifyContent="center"
+            cursor="pointer"
+            onClick={() => openForm(hoverLine, hoverY)}
+            _hover={{ bg: '#005fa3' }}
+            userSelect="none"
+            fontSize="16px"
+            fontWeight="300"
+            color="white"
+            lineHeight="1"
+            title={`Add comment on line ${hoverLine}`}
+          >
+            +
+          </Box>
+        )}
+
+        {/* ── Inline comment form rendered into the Monaco view zone ── */}
+        {commentFormLine != null && commentDomRef.current &&
+          createPortal(
+            <Box
+              bg={colors.panel}
+              border={`1px solid ${colors.statusBar}`}
+              borderRadius="6px"
+              mx="8px"
+              mt="4px"
+              p="8px"
+              display="flex"
+              flexDirection="column"
+              gap="6px"
+              boxShadow="0 2px 8px rgba(0,0,0,0.4)"
+            >
+              <Text fontSize="11px" color="#66b3e8" fontFamily="mono" userSelect="none">
+                ＃L{commentFormLine}
+              </Text>
+              <textarea
+                value={commentText}
+                onChange={e => setCommentText(e.target.value)}
+                placeholder="Add a comment…"
+                // eslint-disable-next-line jsx-a11y/no-autofocus
+                autoFocus
+                style={{
+                  background: 'rgba(0,0,0,0.3)',
+                  border: '1px solid rgba(255,255,255,0.12)',
+                  borderRadius: '4px',
+                  color: '#cccccc',
+                  fontSize: '12px',
+                  fontFamily: 'inherit',
+                  padding: '5px 7px',
+                  resize: 'none',
+                  height: '36px',
+                  outline: 'none',
+                  width: '100%',
+                  boxSizing: 'border-box',
+                }}
+                onKeyDown={e => {
+                  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitComment(); }
+                  if (e.key === 'Escape') cancelForm();
+                }}
+              />
+              <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end' }}>
+                <button
+                  onClick={cancelForm}
+                  style={{
+                    background: 'transparent',
+                    border: '1px solid rgba(255,255,255,0.15)',
+                    color: '#888',
+                    borderRadius: '3px',
+                    padding: '2px 10px',
+                    fontSize: '11px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={submitComment}
+                  style={{
+                    background: commentText.trim() ? '#007acc' : '#444',
+                    border: 'none',
+                    color: commentText.trim() ? 'white' : '#888',
+                    borderRadius: '3px',
+                    padding: '2px 10px',
+                    fontSize: '11px',
+                    cursor: commentText.trim() ? 'pointer' : 'default',
+                  }}
+                >
+                  Add
+                </button>
+              </div>
+            </Box>,
+            commentDomRef.current
+          )
+        }
+      </Box>
+    </>
+  );
+}
+
+
+// ─── JobEditor ────────────────────────────────────────────────────────────────
+
+interface JobEditorProps {
+  jobId: number;
+  pendingLineComments: PendingLineComment[];
+  onAddLineComment: (c: PendingLineComment) => void;
+  onClearLineComments: () => void;
+}
+
+function JobEditor({ jobId, pendingLineComments, onAddLineComment, onClearLineComments }: JobEditorProps) {
+  const colors   = useVSColors();
+  const navigate   = useNavigate();
+  const { user }   = useAuthStore();
+  const performer  = user?.username ?? 'system';
+
+  const [activeTab, setActiveTab] = useState<EditorTab>('yaml');
+  const [metrics,   setMetrics]   = useState<{ lines: number; chars: number } | null>(null);
+  const [showDiff,  setShowDiff]  = useState(false);
+
+  // Review modal state
+  const [reviewModalDecision, setReviewModalDecision] = useState<ReviewDecision | null>(null);
+  const [generalComment,      setGeneralComment]      = useState('');
+
+  const { data: job, isLoading: jobLoading, isError: jobError } = useJob(jobId);
+
+  // For Job 2 we also need the parent job for its YAML tab
+  const isJob2       = job?.job_type === 'CODE_CONVERSION';
+  const parentJobId  = job?.parent_job_id ?? null;
+
+  // useParentJob takes the Job 2 ID and returns the parent Job 1
+  const { data: parentJob }  = useParentJob(isJob2 ? jobId : 0);
+
+  // YAML content: Job 1 → from this job; Job 2 → from parent job
+  const yamlSourceId = isJob2 ? (parentJobId ?? 0) : jobId;
+  const {
+    data: yamlVersion,
+    isLoading: yamlLoading,
+    isError: yamlError,
+  } = useLatestYAML(yamlSourceId, false);
+
+  // Code content: only for Job 2
+  const {
+    data: generatedCode,
+    isLoading: codeLoading,
+    isError: codeError,
+  } = useGeneratedCode(isJob2 ? jobId : 0);
+
+  // Source code for diff view
+  const { data: jobWithSource } = useJobWithSource(isJob2 ? (parentJobId ?? 0) : jobId);
+
+  // Review submission + line comment saving
+  const submitReview  = useSubmitReview(jobId);
+  const addLineComment = useAddLineComment(jobId);
+
+  // ── Tab definitions ──────────────────────────────────────────────────────
+  const tabs: Array<{ id: EditorTab; label: string; color: string }> = [
+    {
+      id:    'yaml',
+      label: job ? yamlFilename(job) : 'schema.yaml',
+      color: '#e89d47',
+    },
+    ...(isJob2
+      ? [{
+          id:    'code' as EditorTab,
+          label: codeFilename(job!),
+          color: job?.target_language ? LANG_COLOR[job.target_language] : '#cccccc',
+        }]
+      : []),
+  ];
+
+  // After job 2 loads, default to code tab if YAML tab wasn't explicitly chosen
+  if (isJob2 && activeTab === 'yaml' && !yamlVersion && generatedCode) {
+    setActiveTab('code');
+  }
+
+  // ── Breadcrumb ───────────────────────────────────────────────────────────
+  const activeTabDef = tabs.find((t) => t.id === activeTab);
+  const breadcrumbs  = ['MIGRATION', job?.source_filename ?? `Job #${jobId}`, activeTabDef?.label ?? ''].filter(Boolean);
+
+  // ── Content resolution ────────────────────────────────────────────────────
+  const showContent = (() => {
+    if (activeTab === 'yaml') {
+      if (yamlLoading) return 'loading';
+      if (yamlError || !yamlVersion) return 'generate';
+      return 'content';
+    } else {
+      if (codeLoading) return 'loading';
+      if (codeError || !generatedCode) return 'generate';
+      return 'content';
+    }
+  })();
+
+  const content      = activeTab === 'yaml' ? (yamlVersion?.yaml_content ?? '') : (generatedCode?.code_content ?? '');
+  const monacoLang   = activeTab === 'yaml' ? 'yaml' : monacoLanguage(job?.target_language ?? 'PYTHON');
+  const languageName = activeTab === 'yaml' ? 'YAML' : languageLabel(job?.target_language ?? null);
+
+  // ── Diff content ──────────────────────────────────────────────────────────
+  // YAML tab: Pick Basic source → YAML  │  Code tab: YAML → generated code
+  const diffOriginal     = activeTab === 'yaml'
+    ? (jobWithSource?.original_source_code ?? '')
+    : (yamlVersion?.yaml_content ?? '');
+  const diffModified     = content;
+  const diffOriginalLang = activeTab === 'yaml' ? 'plaintext' : 'yaml';
+  const diffModifiedLang = monacoLang;
+
+  // ── Guards ────────────────────────────────────────────────────────────────
+  if (jobLoading) return <LoadingState />;
+  if (jobError || !job) return <ErrorState message={`Could not load job #${jobId}`} />;
+
+  // ── Review helpers ────────────────────────────────────────────────────────
+  const reviewableYAML = job.current_state === 'YAML_GENERATED' || job.current_state === 'UNDER_REVIEW';
+  const reviewableCode = job.current_state === 'CODE_GENERATED'  || job.current_state === 'CODE_UNDER_REVIEW';
+  const showReviewBar  = showContent === 'content' && (reviewableYAML || reviewableCode);
+
+  const handleReview = async (decision: ReviewDecision, comment?: string) => {
+    const versionId = yamlVersion?.id ?? generatedCode?.yaml_version_id ?? 0;
+    // Save pending line comments first
+    for (const lc of pendingLineComments) {
+      const payload: LineCommentCreate = {
+        line_number: lc.lineNumber,
+        code_type: lc.codeType,
+        comment: lc.text,
+        reviewer: performer,
+      };
+      await addLineComment.mutateAsync(payload);
+    }
+    // Build review comment list from pending comments
+    const reviewComments = pendingLineComments.map(lc => ({
+      section: `L${lc.lineNumber} (${lc.codeType})`,
+      comment_text: lc.text,
+      severity: 'info' as const,
+    }));
+    submitReview.mutate(
+      {
+        data: {
+          yaml_version_id: versionId,
+          decision,
+          ...(comment ? { general_comment: comment } : {}),
+          ...(reviewComments.length ? { comments: reviewComments } : {}),
+        },
+        performedBy: performer,
+      },
+      {
+        onSuccess: () => {
+          onClearLineComments();
+          setGeneralComment('');
+          setReviewModalDecision(null);
+        },
+      }
+    );
+  };
+
+  return (
+    <Flex direction="column" h="100%" overflow="hidden">
+      {/* Tab Bar */}
+      <Flex
+        bg={colors.tabBar}
+        borderBottom={`1px solid ${colors.panelBorder}`}
+        align="flex-end"
+        flexShrink={0}
+        overflow="hidden"
+      >
+        {tabs.map((tab) => (
+          <Tab
+            key={tab.id}
+            label={tab.label}
+            iconColor={tab.color}
+            isActive={activeTab === tab.id}
+            onClick={() => { setActiveTab(tab.id); setMetrics(null); }}
+          />
+        ))}
+
+        {/* Spacer + action buttons */}
+        <Flex flex={1} justify="flex-end" align="center" pr={2} pb="1px" gap="2px">
+          {/* Diff toggle — only when content is loaded */}
+          {showContent === 'content' && (
+            <Tooltip label={showDiff ? 'Hide diff' : 'Show diff (source → output)'} hasArrow placement="bottom" openDelay={500}>
+              <IconButton
+                aria-label="Toggle diff view"
+                icon={<Icon as={FiGitMerge as ComponentType} boxSize="12px" />}
+                size="xs" variant={showDiff ? 'solid' : 'ghost'}
+                colorScheme={showDiff ? 'blue' : undefined}
+                color={showDiff ? undefined : colors.fgMuted}
+                bg={showDiff ? '#005fa3' : undefined}
+                _hover={{ color: colors.fgActive, bg: showDiff ? '#007acc' : colors.hover }}
+                minW="22px" h="22px"
+                onClick={() => setShowDiff(v => !v)}
+              />
+            </Tooltip>
+          )}
+          <Tooltip label="Open in Job Detail" hasArrow placement="bottom" openDelay={500}>
+            <IconButton
+              aria-label="Open Job Detail"
+              icon={<Icon as={FiExternalLink as ComponentType} boxSize="12px" />}
+              size="xs" variant="ghost"
+              color={colors.fgMuted}
+              _hover={{ color: colors.fgActive, bg: colors.hover }}
+              minW="22px" h="22px"
+              onClick={() => navigate(`/jobs/${jobId}`)}
+            />
+          </Tooltip>
+          {activeTab === 'code' && generatedCode && (
+            <Tooltip label="Download" hasArrow placement="bottom" openDelay={500}>
+              <IconButton
+                aria-label="Download code"
+                icon={<Icon as={FiDownload as ComponentType} boxSize="12px" />}
+                size="xs" variant="ghost"
+                color={colors.fgMuted}
+                _hover={{ color: colors.fgActive, bg: colors.hover }}
+                minW="22px" h="22px"
+                as="a"
+                href={codeApi.downloadUrl(jobId)}
+                download
+              />
+            </Tooltip>
+          )}
+        </Flex>
+      </Flex>
+
+      {/* Breadcrumb */}
+      <BreadcrumbBar segments={breadcrumbs} />
+
+      {/* State badge strip */}
+      <Flex
+        h="26px"
+        align="center"
+        px={3}
+        gap={2}
+        bg={colors.editor}
+        borderBottom={`1px solid ${colors.sidebarBorder}`}
+        flexShrink={0}
+      >
+        <Badge
+          fontSize="10px"
+          px="6px"
+          py="1px"
+          borderRadius="3px"
+          bg={
+            job.current_state.includes('APPROVED')  ? 'teal.700'  :
+            job.current_state.includes('CODE')       ? '#4a1d96'  :
+            job.current_state === 'COMPLETED'        ? 'green.700' :
+            job.current_state === 'YAML_APPROVED_QUEUED' ? 'cyan.800' :
+            job.current_state === 'CREATED'          ? 'gray.600'  : '#7a4a00'
+          }
+          color="white"
+          textTransform="none"
+          fontWeight="medium"
+        >
+          {stateLabel(job.current_state)}
+        </Badge>
+        {job.target_language && (
+          <Badge
+            fontSize="10px"
+            px="6px" py="1px"
+            borderRadius="3px"
+            bg="gray.700"
+            color={LANG_COLOR[job.target_language]}
+            textTransform="none"
+          >
+            {languageLabel(job.target_language)}
+          </Badge>
+        )}
+        {isJob2 && parentJob && (
+          <Badge
+            fontSize="10px"
+            px="6px" py="1px"
+            borderRadius="3px"
+            bg="gray.700"
+            color={colors.fgMuted}
+            textTransform="none"
+            cursor="pointer"
+            onClick={() => navigate(`/jobs/${parentJob.id}`)}
+            _hover={{ color: colors.fg }}
+          >
+            ↑ Job 1 #{parentJob.id}
+          </Badge>
+        )}
+      </Flex>
+
+      {/* Review actions bar */}
+      {showReviewBar && (
+        <ReviewActionsBar
+          isJob2={isJob2}
+          isPending={submitReview.isPending || addLineComment.isPending}
+          onInstantApprove={() => handleReview(isJob2 ? 'CODE_APPROVE' : 'APPROVE')}
+          onOpenModal={(d) => { setReviewModalDecision(d); setGeneralComment(''); }}
+        />
+      )}
+
+      {/* Main content */}
+      {showContent === 'loading' && <LoadingState />}
+      {showContent === 'generate' && <GenerateCTA job={job} />}
+      {showContent === 'content' && !showDiff && (
+        <MonacoView
+          content={content}
+          language={monacoLang}
+          onMetrics={(lines, chars) => setMetrics({ lines, chars })}
+          pendingLineComments={pendingLineComments.filter(
+            c => c.codeType === (activeTab === 'yaml' ? 'yaml' : 'generated_code')
+          )}
+          codeType={activeTab === 'yaml' ? 'yaml' : 'generated_code'}
+          onAddLineComment={onAddLineComment}
+        />
+      )}
+      {showContent === 'content' && showDiff && (
+        <Box flex={1} overflow="hidden" minH={0}>
+          <DiffEditor
+            height="100%"
+            original={diffOriginal}
+            modified={diffModified}
+            originalLanguage={diffOriginalLang}
+            modifiedLanguage={diffModifiedLang}
+            theme="vs-dark"
+            options={{
+              readOnly: true,
+              renderSideBySide: true,
+              minimap: { enabled: false },
+              fontSize: 12,
+              fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+              scrollBeyondLastLine: false,
+              padding: { top: 8 },
+              scrollbar: { verticalScrollbarSize: 6 },
+            }}
+          />
+        </Box>
+      )}
+
+      {/* Info bar */}
+      <EditorInfoBar
+        job={job}
+        lineCount={metrics?.lines}
+        charCount={metrics?.chars}
+        language={showDiff ? `Diff · ${languageName}` : languageName}
+      />
+
+      {/* ── Review comment modal ─────────────────────────────── */}
+      <Modal
+        isOpen={reviewModalDecision != null}
+        onClose={() => setReviewModalDecision(null)}
+        size="md"
+        isCentered
+      >
+        <ModalOverlay bg="blackAlpha.700" backdropFilter="blur(4px)" />
+        <ModalContent bg={colors.panel} border={`1px solid ${colors.panelBorder}`} borderRadius="8px">
+          <ModalHeader fontSize="14px" fontWeight="semibold" color={colors.fgActive} pb={2}>
+            {reviewModalDecision === 'APPROVE_WITH_COMMENTS'
+              ? 'Approve with Comments'
+              : reviewModalDecision === 'CODE_REJECT_REGENERATE'
+              ? 'Reject Code — Request Regeneration'
+              : 'Reject YAML — Request Regeneration'}
+          </ModalHeader>
+          <ModalCloseButton color={colors.fgMuted} />
+          <ModalBody pb={4}>
+            {pendingLineComments.length > 0 && (
+              <Text fontSize="11px" color={colors.fgMuted} mb={3}>
+                {pendingLineComments.length} line comment{pendingLineComments.length !== 1 ? 's' : ''} will be included.
+              </Text>
+            )}
+            <Textarea
+              value={generalComment}
+              onChange={e => setGeneralComment(e.target.value)}
+              placeholder="General comment (optional)…"
+              bg={colors.input}
+              border={`1px solid ${colors.inputBorder}`}
+              borderRadius="4px"
+              color={colors.fg}
+              fontSize="13px"
+              _placeholder={{ color: colors.fgMuted, opacity: 0.5 }}
+              _focus={{ borderColor: '#007acc', boxShadow: '0 0 0 1px #007acc' }}
+              resize="vertical"
+              minH="80px"
+              rows={3}
+            />
+          </ModalBody>
+          <ModalFooter gap={2} pt={0}>
+            <Button
+              size="sm"
+              variant="ghost"
+              color={colors.fgMuted}
+              onClick={() => setReviewModalDecision(null)}
+              fontSize="12px"
+            >
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              colorScheme={
+                reviewModalDecision === 'APPROVE_WITH_COMMENTS' ? 'orange' : 'red'
+              }
+              onClick={() => reviewModalDecision && handleReview(reviewModalDecision, generalComment)}
+              isLoading={submitReview.isPending}
+              fontSize="12px"
+            >
+              Submit
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
+    </Flex>
+  );
+}
+
+// ─── EditorPanel (main export) ────────────────────────────────────────────────
+
+export interface EditorPanelProps {
+  jobId: number | null;
+  pendingLineComments: PendingLineComment[];
+  onAddLineComment: (c: PendingLineComment) => void;
+  onClearLineComments: () => void;
+}
+
+/**
+ * VS Code–style editor panel.
+ * Renders a welcome screen when no job is selected.
+ * When a job is selected:
+ *  - Job 1 (YAML_CONVERSION): shows a YAML tab with Monaco editor
+ *  - Job 2 (CODE_CONVERSION): shows both a YAML tab (parent) and a Code tab
+ * Monaco is read-only; a Generate CTA is shown when content is missing.
+ * Line comments: hovering the gutter shows a + button (GitHub-PR style);
+ *   clicking opens an inline comment form via Monaco view zones.
+ */
+export default function EditorPanel({ jobId, pendingLineComments, onAddLineComment, onClearLineComments }: EditorPanelProps) {
+  const colors = useVSColors();
+  if (!jobId) return <WelcomeScreen />;
+  return (
+    <JobEditor
+      jobId={jobId}
+      pendingLineComments={pendingLineComments}
+      onAddLineComment={onAddLineComment}
+      onClearLineComments={onClearLineComments}
+    />
+  );
+}

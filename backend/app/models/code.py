@@ -3,7 +3,7 @@ GeneratedCode database model.
 Stores the final generated modern language code.
 """
 
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Boolean
 from sqlalchemy.orm import relationship
 from datetime import datetime
 
@@ -44,12 +44,31 @@ class GeneratedCode(Base):
     llm_model_used = Column(String(100), nullable=True)
     llm_tokens_used = Column(Integer, nullable=True)
     generation_time_seconds = Column(Integer, nullable=True)
-    
+
+    # Phase 1 (Structured Output) — Agent 2 envelope metadata
+    # JSON-serialised lists; None when code was generated before Phase 1
+    sections_covered = Column(Text, nullable=True)          # JSON list[str]
+    external_stubs_included = Column(Text, nullable=True)   # JSON list[str]
+    generation_warnings = Column(Text, nullable=True)       # JSON list[str]
+    llm_envelope_used = Column(Boolean, nullable=True)      # True/False/None
+
+    # Phase 2 (Language-Specific Validation) — per-attempt validation metadata
+    validation_tool_available = Column(Boolean, nullable=True)  # False = toolchain absent
+    validation_errors = Column(Text, nullable=True)             # JSON list[str]
+
+    # Phase 3 (Code Version Control) — version tracking per job
+    version_number = Column(Integer, nullable=True, index=True)  # 1, 2, 3… per job
+    is_current = Column(Boolean, nullable=True, default=False)   # True on the latest version
+
     # Timestamps
     generated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    
+
+    # Review gate — True only after a reviewer explicitly accepts this code
+    is_accepted = Column(Boolean, default=False, nullable=False)
+
     # Relationships
     job = relationship("MigrationJob", back_populates="generated_codes")
-    
+    code_reviews = relationship("CodeReview", back_populates="generated_code", cascade="all, delete-orphan")
+
     def __repr__(self):
         return f"<GeneratedCode(id={self.id}, job_id={self.job_id}, language={self.target_language})>"

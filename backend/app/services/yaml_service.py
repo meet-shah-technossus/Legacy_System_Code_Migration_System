@@ -11,6 +11,7 @@ from app.models.yaml_version import YAMLVersion
 from app.core.enums import JobState
 from app.services.yaml_generator import YAMLGenerator, YAMLGenerationResult
 from app.services.audit_service import AuditService
+from app.services.metrics_service import MetricsService
 from app.services.job_manager import JobManager
 import logging
 
@@ -29,7 +30,8 @@ class YAMLService:
         db: Session,
         job_id: int,
         performed_by: str,
-        force_regenerate: bool = False
+        force_regenerate: bool = False,
+        review_feedback_context: Optional[Dict[str, Any]] = None
     ) -> YAMLVersion:
         """
         Generate YAML for a migration job and store it in the database.
@@ -39,6 +41,7 @@ class YAMLService:
             job_id: Migration job ID
             performed_by: User/system performing the action
             force_regenerate: Force regeneration even if YAML exists
+            review_feedback_context: Optional context from review feedback for regeneration
             
         Returns:
             Created YAMLVersion object
@@ -67,12 +70,45 @@ class YAMLService:
             except (json.JSONDecodeError, TypeError):
                 logger.warning(f"Failed to parse metadata_json for job {job_id}")
         
-        # Generate YAML with auto-retry
+        # Prepare additional context (including review feedback if provided)
+        additional_context = metadata.get("additional_context", "")
+        
+        if review_feedback_context:
+            # Build feedback summary for LLM
+            feedback_parts = []
+            
+            if review_feedback_context.get("previous_comments"):
+                feedback_parts.append("\n=== REVIEWER FEEDBACK ===")
+                feedback_parts.append(f"Previous version: {review_feedback_context.get('previous_version_number', 'N/A')}")
+                
+                # Add general comment if present
+                if review_feedback_context.get("general_comment"):
+                    feedback_parts.append(f"\nGeneral Feedback: {review_feedback_context['general_comment']}")
+                
+                # Add section-specific comments
+                comments = review_feedback_context["previous_comments"]
+                if comments:
+                    feedback_parts.append("\nSection-Specific Feedback:")
+                    for comment in comments:
+                        severity_marker = "[CRITICAL]" if comment.get("is_blocking") else ""
+                        section = comment.get("section_type", "general")
+                        feedback_parts.append(f"  {severity_marker} {section}: {comment['comment_text']}")
+            
+            if review_feedback_context.get("additional_instructions"):
+                feedback_parts.append(f"\nAdditional Instructions: {review_feedback_context['additional_instructions']}")
+            
+            if feedback_parts:
+                additional_context += "\n" + "\n".join(feedback_parts)
+                logger.info(f"Including review feedback in generation for job {job_id}")
+
+        # Track timing
+        start_time = datetime.utcnow()
         result: YAMLGenerationResult = self.generator.generate_yaml_with_auto_retry(
             pick_basic_code=job.original_source_code,
             original_filename=job.source_filename or "unknown.bp",
-            additional_context=metadata.get("additional_context", "")
+            additional_context=additional_context
         )
+        generation_time = (datetime.utcnow() - start_time).total_seconds()
         
         # Determine parent version (if this is a regeneration)
         parent_version_id = None
@@ -116,9 +152,36 @@ class YAMLService:
             AuditService.log_yaml_generated(
                 db=db,
                 job_id=job_id,
-                performed_by=performed_by,
                 yaml_version_id=yaml_version.id,
-                is_valid=True
+                version_number=yaml_version.version_number,
+                generation_time=int(generation_time)
+            )
+            
+            # Record success metrics
+            MetricsService.record_counter(
+                db=db,
+                metric_name=MetricsService.YAML_GENERATION_SUCCESS,
+                job_id=job_id,
+                tags={"version": yaml_version.version_number}
+            )
+            
+            MetricsService.record_timer(
+                db=db,
+                metric_name=MetricsService.YAML_GENERATION_TIME,
+                duration_seconds=generation_time,
+                job_id=job_id,
+                tags={"success": "true", "version": yaml_version.version_number}
+            )
+            
+            # Track YAML size
+            yaml_size = len(result.raw_yaml.encode('utf-8'))
+            MetricsService.record_gauge(
+                db=db,
+                metric_name=MetricsService.YAML_SIZE,
+                value=yaml_size,
+                unit="bytes",
+                job_id=job_id,
+                tags={"version": yaml_version.version_number}
             )
             
             logger.info(f"YAML generation successful for job {job_id}, version {yaml_version.version_number}")
@@ -127,12 +190,26 @@ class YAMLService:
             AuditService.log_error(
                 db=db,
                 job_id=job_id,
-                performed_by=performed_by,
-                error_type="yaml_generation_validation_failed",
-                error_details={
+                error_message=f"YAML validation failed with {len(result.errors)} errors",
+                error_context={
                     "errors": result.errors,
                     "attempt_count": result.attempt_number
                 }
+            )
+            
+            # Record failure metrics
+            MetricsService.record_counter(
+                db=db,
+                metric_name=MetricsService.YAML_GENERATION_FAILURE,
+                job_id=job_id,
+                tags={"attempt": result.attempt_number}
+            )
+            
+            MetricsService.record_counter(
+                db=db,
+                metric_name=MetricsService.ERROR_COUNT,
+                job_id=job_id,
+                tags={"error_type": "yaml_validation"}
             )
             
             logger.warning(f"YAML generation validation failed for job {job_id} after {result.attempt_number} attempts")
@@ -339,3 +416,60 @@ class YAMLService:
         logger.info(f"Retrieved lineage of {len(lineage)} versions for job {job_id}, version {version_number}")
         
         return lineage
+    
+    def regenerate_yaml_with_feedback(
+        self,
+        db: Session,
+        job_id: int,
+        performed_by: str,
+        include_previous_comments: bool = True,
+        additional_instructions: Optional[str] = None
+    ) -> YAMLVersion:
+        """
+        Regenerate YAML incorporating feedback from previous review.
+        
+        Args:
+            db: Database session
+            job_id: Migration job ID
+            performed_by: User/system performing the action
+            include_previous_comments: Include comments from last review
+            additional_instructions: Additional guidance for regeneration
+            
+        Returns:
+            New YAMLVersion object
+            
+        Raises:
+            HTTPException: If job not found or not in REGENERATE_REQUESTED state
+        """
+        from app.services.review_service import ReviewService
+        
+        # Verify job is in REGENERATE_REQUESTED state
+        job = self.job_manager.get_job_or_404(db, job_id)
+        
+        if job.current_state != JobState.REGENERATE_REQUESTED:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot regenerate YAML. Job is in state {job.current_state.value}. Must be in REGENERATE_REQUESTED state."
+            )
+        
+        # Prepare regeneration context from review feedback
+        feedback_context = ReviewService.prepare_regeneration_context(
+            db=db,
+            job_id=job_id,
+            include_previous_comments=include_previous_comments
+        )
+        
+        # Add additional instructions if provided
+        if additional_instructions:
+            feedback_context["additional_instructions"] = additional_instructions
+        
+        logger.info(f"Regenerating YAML for job {job_id} with review feedback")
+        
+        # Generate new YAML version with feedback context
+        return self.generate_yaml_for_job(
+            db=db,
+            job_id=job_id,
+            performed_by=performed_by,
+            force_regenerate=False,
+            review_feedback_context=feedback_context
+        )

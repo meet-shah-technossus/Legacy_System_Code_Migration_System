@@ -1,0 +1,66 @@
+# ───────────────────────────────────────────────
+# Root .gitignore for Legacy System Code Migration
+# ───────────────────────────────────────────────
+
+# Environment / secrets — NEVER commit real keys
+**/.env
+**/.env.local
+**/.env.*.local
+.env
+.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# Database (SQLite — generated at runtime)
+*.db
+*.sqlite
+*.sqlite3
+
+# Node / Frontend
+node_modules/
+dist/
+.cache/
+*.tsbuildinfo
+playwright-report/
+test-results/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

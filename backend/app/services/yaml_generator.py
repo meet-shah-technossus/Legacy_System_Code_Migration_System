@@ -1,7 +1,7 @@
 """YAML generator service using LLM for Pick Basic code analysis."""
 
 from typing import Tuple, Optional, Dict, Any
-from app.llm.gemini_client import get_gemini_client
+from app.llm.openai_client import get_openai_client
 from app.llm.prompts import build_yaml_generation_prompt, build_yaml_regeneration_prompt
 from app.services.yaml_validator import YAMLValidator
 from app.schemas.yaml_schema import PickBasicYAMLSchema
@@ -38,7 +38,7 @@ class YAMLGenerator:
     
     def __init__(self):
         """Initialize the YAML generator with LLM client."""
-        self.llm_client = get_gemini_client()
+        self.llm_client = get_openai_client()
         self.validator = YAMLValidator()
         self.max_retries = settings.MAX_YAML_RETRY_ATTEMPTS
     
@@ -82,17 +82,20 @@ class YAMLGenerator:
             is_valid, validated_schema, errors = self.validator.validate_yaml_content(raw_yaml)
             
             if is_valid:
-                logger.info("YAML generation successful and validated")
+                # Phase 2: normalize — re-serialize validated schema so all 7 sections
+                # are always present with stable ordering before storing to DB.
+                normalized_yaml = self.validator.normalize_to_yaml(validated_schema)
+                logger.info("YAML generation successful, normalized to %d characters", len(normalized_yaml))
                 return YAMLGenerationResult(
                     success=True,
-                    raw_yaml=raw_yaml,
+                    raw_yaml=normalized_yaml,
                     validated_schema=validated_schema,
                     errors=[],
                     attempt_number=1,
                     llm_metadata={
                         "model": self.llm_client.model_name,
                         "prompt_length": len(prompt),
-                        "response_length": len(raw_yaml)
+                        "response_length": len(normalized_yaml)
                     }
                 )
             else:
@@ -225,9 +228,16 @@ class YAMLGenerator:
             # Validate the regenerated YAML
             is_valid, validated_schema, errors = self.validator.validate_yaml_content(raw_yaml)
             
+            # Phase 2: normalize regenerated YAML the same way as initial generation
+            if is_valid:
+                normalized_yaml = self.validator.normalize_to_yaml(validated_schema)
+                logger.info("YAML regeneration successful, normalized to %d characters", len(normalized_yaml))
+            else:
+                normalized_yaml = raw_yaml  # keep raw for error diagnosis
+
             return YAMLGenerationResult(
                 success=is_valid,
-                raw_yaml=raw_yaml,
+                raw_yaml=normalized_yaml,
                 validated_schema=validated_schema,
                 errors=errors,
                 attempt_number=regeneration_count + 1,

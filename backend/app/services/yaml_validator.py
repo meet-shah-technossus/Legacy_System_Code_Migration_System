@@ -8,6 +8,18 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Canonical section order — Agent 2 always receives these 7 sections in this order.
+_CORE_SECTIONS = [
+    "metadata",
+    "program_structure",
+    "variables",
+    "file_operations",
+    "subroutines",
+    "business_rules",
+    "logic_flow",
+]
+_OPTIONAL_SECTIONS = ["labels", "comments", "warnings"]
+
 
 class YAMLValidationError(Exception):
     """Custom exception for YAML validation errors."""
@@ -161,6 +173,56 @@ class YAMLValidator:
         
         logger.info("Complete YAML validation successful")
         return True, schema_obj, []
+
+    @staticmethod
+    def normalize_to_yaml(schema: PickBasicYAMLSchema) -> str:
+        """
+        Phase 2 — Normalize YAML output.
+
+        Re-serializes a validated PickBasicYAMLSchema back to a canonical YAML
+        string so that every value stored in the DB (and later fed to Agent 2)
+        has a predictable, complete structure:
+
+        - All 7 core sections are ALWAYS present, even when empty.
+        - Empty lists are written as \"[]\" so the LLM can see the section exists.
+        - Sections appear in a fixed, logical order (not alphabetical).
+        - Optional top-level sections (labels, comments, warnings) are included
+          only when non-None, keeping the output concise.
+        - Enum values are serialized as plain strings (not Python objects).
+
+        Args:
+            schema: A successfully validated PickBasicYAMLSchema instance.
+
+        Returns:
+            Normalized YAML string ready to be stored and fed to Agent 2.
+        """
+        # Serialize with enum values as their string representations
+        raw_dict = schema.model_dump(mode="json")
+
+        # Build ordered output: all 7 core sections always present
+        ordered: Dict[str, Any] = {}
+        for section in _CORE_SECTIONS:
+            value = raw_dict.get(section)
+            # If a list section is missing or None, default to empty list
+            if value is None:
+                ordered[section] = []
+            else:
+                ordered[section] = value
+
+        # Include optional sections only when they carry real data
+        for section in _OPTIONAL_SECTIONS:
+            value = raw_dict.get(section)
+            if value is not None:
+                ordered[section] = value
+
+        normalized = yaml.dump(
+            ordered,
+            default_flow_style=False,
+            allow_unicode=True,
+            sort_keys=False,   # preserve our explicit section order
+        )
+        logger.debug("YAML normalized: %d characters, sections: %s", len(normalized), list(ordered.keys()))
+        return normalized
     
     @staticmethod
     def get_validation_summary(errors: List[str]) -> Dict[str, Any]:

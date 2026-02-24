@@ -259,3 +259,34 @@ def get_yaml_statistics(
         "latest_version_number": max((v.version_number for v in versions), default=0),
         "has_approved_version": approved_count > 0
     }
+
+
+class YAMLRegenerationRequest(BaseModel):
+    """Request to regenerate YAML with review feedback."""
+    performed_by: str = Field(..., min_length=1, max_length=255, description="User/system performing the action")
+    include_previous_comments: bool = Field(default=True, description="Include comments from last review")
+    additional_instructions: Optional[str] = Field(None, description="Additional guidance for regeneration")
+
+
+@router.post(
+    "/jobs/{job_id}/yaml/regenerate",
+    response_model=None,
+    status_code=status.HTTP_201_CREATED,
+    summary="Regenerate YAML with review feedback",
+    description="Generate a new YAML version incorporating feedback from previous review. Job must be in REGENERATE_REQUESTED state."
+)
+def regenerate_yaml_with_feedback(
+    job_id: int,
+    request: YAMLRegenerationRequest,
+    db: Session = Depends(get_db)
+):
+    """Regenerate YAML incorporating review feedback."""
+    yaml_version = yaml_service.regenerate_yaml_with_feedback(
+        db=db,
+        job_id=job_id,
+        performed_by=request.performed_by,
+        include_previous_comments=request.include_previous_comments,
+        additional_instructions=request.additional_instructions
+    )
+    
+    return YAMLVersionResponse.from_orm(yaml_version)

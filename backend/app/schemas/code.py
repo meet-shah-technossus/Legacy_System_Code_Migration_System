@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 
-from app.core.enums import TargetLanguage
+from app.core.enums import TargetLanguage, ReviewDecision
 
 
 # Request Schemas
@@ -77,5 +77,49 @@ class CodeGenerationSummary(BaseModel):
     target_language: str
     estimated_lines_of_code: Optional[int]
     generated_at: datetime
-    
+    is_accepted: bool = False
+
     model_config = {"from_attributes": True}
+
+
+# ── Code Review Schemas ───────────────────────────────────────────────────────
+
+class CodeReviewSubmit(BaseModel):
+    """Request schema for submitting a code review."""
+    decision: ReviewDecision = Field(
+        ...,
+        description="CODE_APPROVE to accept, CODE_REJECT_REGENERATE to reject and regenerate",
+    )
+    general_comment: Optional[str] = Field(
+        None,
+        max_length=4000,
+        description="Feedback for rejection (required when rejecting) or notes when accepting",
+    )
+    reviewed_by: Optional[str] = Field(None, max_length=100, description="Reviewer identifier")
+
+
+class CodeReviewResponse(BaseModel):
+    """Response schema for a code review."""
+    id: int
+    job_id: int
+    generated_code_id: int
+    decision: str
+    general_comment: Optional[str]
+    reviewed_by: Optional[str]
+    triggered_regeneration: bool
+    reviewed_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class CodeRegenerationRequest(BaseModel):
+    """Schema for manually requesting code regeneration with new instructions."""
+    additional_instructions: Optional[str] = Field(
+        None,
+        max_length=4000,
+        description="Extra guidance to pass to the LLM for the next generation attempt",
+    )
+    include_previous_comments: bool = Field(
+        True,
+        description="Carry forward all past reviewer comments into the new prompt",
+    )

@@ -14,8 +14,8 @@ pydantic-settings==2.1.0
 # YAML processing
 pyyaml==6.0.1
 
-# Google Gemini LLM
-google-generativeai==0.3.2
+# OpenAI LLM
+openai>=1.0.0
 
 # Environment management
 python-dotenv==1.0.0
@@ -25,6 +25,10 @@ httpx==0.26.0
 
 # Date/time utilities
 python-dateutil==2.8.2
+
+# Authentication - JWT & password hashing
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
 
 # Testing
 pytest==7.4.4

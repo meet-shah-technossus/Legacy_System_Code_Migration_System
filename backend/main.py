@@ -1,6 +1,41 @@
 """
 Main FastAPI application entry point.
-Initializes the application, configures middleware, and includes routers.
+
+This module initializes the Legacy System Code Migration backend service,
+which provides a two-stage transformation system for migrating Pick Basic
+code to modern programming languages (Python, JavaScript, Java).
+
+Key Features:
+    - Two-stage transformation: Pick Basic → YAML → Target Language
+    - LLM-powered YAML generation using Google Gemini
+    - Hybrid code generation (LLM + rule-based mapper)
+    - Human-in-the-loop review workflow
+    - Comprehensive audit logging and metrics
+    - State machine-driven job lifecycle management
+
+Architecture:
+    - Agent 1 (YAML Generator): Converts Pick Basic to intermediate YAML
+    - Agent 2 (Code Generator): Transforms YAML to target language code
+    - Review System: Human approval gates between stages
+    - Audit Layer: Complete observability and compliance tracking
+
+API Endpoints:
+    - /api/jobs: Job management (CRUD, state transitions, statistics)
+    - /api/yaml: YAML generation and versioning
+    - /api/reviews: Review submission and approval workflow
+    - /api/code-generation: Code generation and retrieval
+    - /api/audit-logs: Audit trail queries
+    - /api/metrics: Performance metrics and health monitoring
+
+Configuration:
+    - Environment variables loaded from .env file
+    - See app.core.config.Settings for all configuration options
+
+Database:
+    - SQLite for development (configurable via DATABASE_URL)
+    - SQLAlchemy ORM with automatic schema creation
+
+For more information, see the API documentation at /docs or /redoc.
 """
 
 from fastapi import FastAPI
@@ -9,7 +44,7 @@ from contextlib import asynccontextmanager
 
 from app.core.config import settings
 from app.core.database import init_db
-from app.api import jobs, yaml
+from app.api import jobs, yaml, reviews, code_generation, audit_metrics, auth, chat
 
 
 @asynccontextmanager
@@ -71,13 +106,18 @@ async def health_check():
         "app": settings.APP_NAME,
         "version": settings.APP_VERSION,
         "database": "connected",
-        "llm_configured": bool(settings.GEMINI_API_KEY)
+        "llm_configured": bool(settings.OPENAI_API_KEY)
     }
 
 
 # Include API routers
+app.include_router(auth.router, prefix="/api/auth", tags=["Authentication"])
 app.include_router(jobs.router, prefix="/api/jobs", tags=["Jobs"])
 app.include_router(yaml.router, prefix="/api", tags=["YAML"])
+app.include_router(reviews.router, prefix="/api/jobs", tags=["Reviews"])
+app.include_router(code_generation.router, prefix="/api/jobs", tags=["Code Generation"])
+app.include_router(audit_metrics.router, tags=["Audit & Metrics"])
+app.include_router(chat.router, prefix="/api", tags=["Chat"])
 
 
 if __name__ == "__main__":
