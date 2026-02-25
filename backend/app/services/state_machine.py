@@ -53,6 +53,7 @@ class StateMachine:
         },
         JobState.CODE_ACCEPTED: {
             JobState.COMPLETED,
+            JobState.CODE_UNDER_REVIEW,  # Allow restoring/reviewing after acceptance
         },
         JobState.COMPLETED: set(),  # Terminal state - no transitions allowed
     }

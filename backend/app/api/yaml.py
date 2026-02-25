@@ -28,19 +28,21 @@ class YAMLVersionResponse(BaseModel):
     version_number: int
     yaml_content: str
     is_valid: bool
-    validation_errors: Optional[List[str]]
-    generated_by: str
-    created_at: str
+    validation_errors: Optional[str]
+    generated_at: str
     is_approved: bool
     approved_by: Optional[str]
     approved_at: Optional[str]
-    approval_comments: Optional[str]
-    generation_metadata: Optional[dict]
+    llm_model_used: Optional[str]
+    llm_tokens_used: Optional[int]
+    generation_time_seconds: Optional[int]
+    regeneration_reason: Optional[str]
+    reviewer_comments_context: Optional[str]
     parent_version_id: Optional[int]
-    
+
     class Config:
         from_attributes = True
-        
+
     @classmethod
     def from_orm(cls, version: YAMLVersion):
         """Convert ORM object to response schema."""
@@ -51,13 +53,15 @@ class YAMLVersionResponse(BaseModel):
             yaml_content=version.yaml_content,
             is_valid=version.is_valid,
             validation_errors=version.validation_errors,
-            generated_by=version.generated_by,
-            created_at=version.created_at.isoformat(),
+            generated_at=version.generated_at.isoformat() if version.generated_at else "",
             is_approved=version.is_approved,
             approved_by=version.approved_by,
             approved_at=version.approved_at.isoformat() if version.approved_at else None,
-            approval_comments=version.approval_comments,
-            generation_metadata=version.generation_metadata,
+            llm_model_used=version.llm_model_used,
+            llm_tokens_used=version.llm_tokens_used,
+            generation_time_seconds=version.generation_time_seconds,
+            regeneration_reason=version.regeneration_reason,
+            reviewer_comments_context=version.reviewer_comments_context,
             parent_version_id=version.parent_version_id
         )
 
@@ -67,14 +71,14 @@ class YAMLVersionSummary(BaseModel):
     id: int
     version_number: int
     is_valid: bool
-    generated_by: str
-    created_at: str
+    generated_at: str
     is_approved: bool
     approved_by: Optional[str]
     has_errors: bool
-    error_count: int
+    llm_model_used: Optional[str]
+    regeneration_reason: Optional[str]
     parent_version_id: Optional[int]
-    
+
     @classmethod
     def from_orm(cls, version: YAMLVersion):
         """Convert ORM object to summary schema."""
@@ -82,12 +86,12 @@ class YAMLVersionSummary(BaseModel):
             id=version.id,
             version_number=version.version_number,
             is_valid=version.is_valid,
-            generated_by=version.generated_by,
-            created_at=version.created_at.isoformat(),
+            generated_at=version.generated_at.isoformat() if version.generated_at else "",
             is_approved=version.is_approved,
             approved_by=version.approved_by,
             has_errors=bool(version.validation_errors),
-            error_count=len(version.validation_errors) if version.validation_errors else 0,
+            llm_model_used=version.llm_model_used,
+            regeneration_reason=version.regeneration_reason,
             parent_version_id=version.parent_version_id
         )
 

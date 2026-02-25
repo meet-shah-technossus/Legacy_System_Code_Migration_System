@@ -44,8 +44,14 @@ class YAMLValidator:
         Returns:
             Cleaned YAML string
         """
-        content = raw_content.strip()
-        
+        # If LLM output is a dict with 'text', extract it
+        if isinstance(raw_content, dict) and 'text' in raw_content:
+            content = raw_content['text']
+        elif not isinstance(raw_content, str):
+            content = str(raw_content)
+        else:
+            content = raw_content.strip()
+
         # Remove markdown code blocks if present
         if content.startswith("```yaml"):
             content = content[7:]  # Remove ```yaml
@@ -53,11 +59,11 @@ class YAMLValidator:
             content = content[6:]  # Remove ```yml
         elif content.startswith("```"):
             content = content[3:]  # Remove ```
-            
+
         if content.endswith("```"):
             content = content[:-3]
-            
-        return content.strip()
+
+        return content.strip() if isinstance(content, str) else str(content)
     
     @staticmethod
     def parse_yaml(yaml_content: str) -> Tuple[bool, Optional[Dict[str, Any]], List[str]]:

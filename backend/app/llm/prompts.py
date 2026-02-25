@@ -21,6 +21,7 @@ Your task is to deeply analyze the provided Pick Basic code and produce a YAML d
 - **Extract ALL business rules** (validation logic, constraints, policies)
 - **Link logic_flow nodes to business rules** using related_rule_ids
 - Estimate complexity as: low, medium, high, very_high
+- **ALL ENUM VALUES MUST BE UPPERCASE**: program_structure.type (PROGRAM/SUBROUTINE/FUNCTION/MENU), variables scope (LOCAL/GLOBAL/COMMON/PARAMETER), file_operations operation (OPEN/READ/WRITE/DELETE/CLOSE/READNEXT/READU/WRITEV/SELECT), logic_flow type (SEQUENCE/LOOP/CONDITIONAL/FILE_IO/SUBROUTINE_CALL/ASSIGNMENT/EXPRESSION/RETURN/GOTO/CASE/PRINT/INPUT)
 
 **YAML STRUCTURE TEMPLATE:**
 ```yaml
@@ -30,7 +31,7 @@ metadata:
   complexity_estimate: "medium"
   
 program_structure:
-  type: "program"  # or "subroutine"
+  type: "PROGRAM"  # MUST be one of: PROGRAM, SUBROUTINE, FUNCTION, MENU (UPPERCASE)
   name: "PROGRAM.NAME"
   entry_points:
     - "main"
@@ -40,15 +41,15 @@ program_structure:
 variables:
   - name: "INVOICE.ID"
     type: "string"
-    scope: "local"
+    scope: "LOCAL"  # MUST be one of: LOCAL, GLOBAL, COMMON, PARAMETER (UPPERCASE)
     multi_value: false
   - name: "CUSTOMER.BALANCE"
     type: "numeric"
-    scope: "local"
+    scope: "LOCAL"
     multi_value: false
     
 file_operations:
-  - operation: "open"
+  - operation: "OPEN"  # MUST be one of: OPEN, READ, WRITE, DELETE, CLOSE, READNEXT, READU, WRITEV, SELECT (UPPERCASE)
     file_handle: "INVOICE.FILE"
     record_id: null
     original_statement: "OPEN 'INVOICE' TO INVOICE.FILE ELSE STOP"
@@ -74,19 +75,19 @@ business_rules:
     
 logic_flow:
   - section_id: "main"
-    type: "sequence"
+    type: "SEQUENCE"  # MUST be one of: SEQUENCE, LOOP, CONDITIONAL, FILE_IO, SUBROUTINE_CALL, ASSIGNMENT, EXPRESSION, RETURN, GOTO, CASE, PRINT, INPUT (UPPERCASE)
     semantic_intent: "main_program_flow"
     original_code: ""
     related_rule_ids: []
     children:
       - section_id: "init"
-        type: "assignment"
+        type: "ASSIGNMENT"
         semantic_intent: "initialize_total"
         original_code: "TOTAL = 0"
         related_rule_ids: []
         children: []
       - section_id: "validate_balance"
-        type: "conditional"
+        type: "CONDITIONAL"
         semantic_intent: "validate_customer_balance_non_negative"
         original_code: "IF CUSTOMER.BALANCE < 0 THEN GOSUB ERROR.HANDLER"
         condition: "CUSTOMER.BALANCE < 0"
@@ -209,7 +210,7 @@ def build_yaml_regeneration_prompt(
         previous_yaml_section = f"""
 **PREVIOUS YAML (for reference):**
 ```yaml
-{previous_yaml[:2000]}{'...[truncated]' if len(previous_yaml) > 2000 else ''}
+    {str(previous_yaml)[:2000]}{'...[truncated]' if len(str(previous_yaml)) > 2000 else ''}
 ```
 
 """

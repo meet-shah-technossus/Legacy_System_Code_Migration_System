@@ -112,6 +112,9 @@ class CodeReviewService:
 
         # 7. Branch: accept or reject
         if decision == ReviewDecision.CODE_APPROVE:
+            # Set is_accepted=True on latest code version
+            latest_code.is_accepted = True
+            db.flush()
             self._accept_code(db, job_id, latest_code, reviewed_by)
         else:
             db.commit()  # commit review record before triggering regen

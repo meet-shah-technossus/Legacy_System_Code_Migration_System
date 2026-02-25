@@ -3,7 +3,7 @@ YAML Structure Schema - The STRICT CONTRACT for LLM output.
 This defines the exact structure that YAML Generator (Agent 1) must produce.
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional, Any, Dict
 from datetime import datetime
 from enum import Enum
@@ -29,6 +29,7 @@ class VariableScope(str, Enum):
 
 class LogicNodeType(str, Enum):
     """Types of logic flow nodes."""
+    SEQUENCE = "SEQUENCE"
     LOOP = "LOOP"
     CONDITIONAL = "CONDITIONAL"
     FILE_IO = "FILE_IO"
@@ -73,6 +74,11 @@ class ProgramStructure(BaseModel):
     entry_points: List[str] = Field(default_factory=list, description="Entry point labels")
     exit_points: List[str] = Field(default_factory=list, description="Exit/return points")
 
+    @field_validator('type', mode='before')
+    @classmethod
+    def uppercase_type(cls, v):
+        return v.upper() if isinstance(v, str) else v
+
 
 class VariableDeclaration(BaseModel):
     """Variable declaration information."""
@@ -83,6 +89,11 @@ class VariableDeclaration(BaseModel):
     description: Optional[str] = Field(None, description="Purpose of the variable")
     multi_value: bool = Field(False, description="Is this a multi-value field")
 
+    @field_validator('scope', mode='before')
+    @classmethod
+    def uppercase_scope(cls, v):
+        return v.upper() if isinstance(v, str) else v
+
 
 class LogicFlowNode(BaseModel):
     """Recursive node representing program logic."""
@@ -91,6 +102,11 @@ class LogicFlowNode(BaseModel):
     original_code: str = Field(..., description="Original Pick Basic code")
     semantic_intent: str = Field(..., description="What this code does in plain English")
     line_numbers: Optional[str] = Field(None, description="Source line numbers")
+
+    @field_validator('type', mode='before')
+    @classmethod
+    def uppercase_type(cls, v):
+        return v.upper() if isinstance(v, str) else v
     
     # Optional fields depending on type
     condition: Optional[str] = Field(None, description="Condition expression (for conditionals/loops)")
@@ -113,6 +129,11 @@ class FileOperation(BaseModel):
     original_statement: str = Field(..., description="Original Pick Basic statement")
     semantic_intent: str = Field(..., description="What this operation does")
     line_number: Optional[int] = Field(None, description="Source line number")
+
+    @field_validator('operation', mode='before')
+    @classmethod
+    def uppercase_operation(cls, v):
+        return v.upper() if isinstance(v, str) else v
 
 
 class SubroutineInfo(BaseModel):

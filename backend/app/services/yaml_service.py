@@ -92,7 +92,11 @@ class YAMLService:
                     for comment in comments:
                         severity_marker = "[CRITICAL]" if comment.get("is_blocking") else ""
                         section = comment.get("section_type", "general")
-                        feedback_parts.append(f"  {severity_marker} {section}: {comment['comment_text']}")
+                        # Try multiple possible keys for comment text
+                        comment_text = comment.get('comment_text') or comment.get('text') or comment.get('comment')
+                        if not comment_text:
+                            continue  # skip if no text
+                        feedback_parts.append(f"  {severity_marker} {section}: {comment_text}")
             
             if review_feedback_context.get("additional_instructions"):
                 feedback_parts.append(f"\nAdditional Instructions: {review_feedback_context['additional_instructions']}")
@@ -114,25 +118,25 @@ class YAMLService:
         parent_version_id = None
         if job.current_state == JobState.REGENERATE_REQUESTED and job.yaml_versions:
             # Get the most recent version
-            latest_version = max(job.yaml_versions, key=lambda v: v.created_at)
+            latest_version = max(job.yaml_versions, key=lambda v: v.generated_at)
             parent_version_id = latest_version.id
         
-        # Create YAML version record
+        # Always store YAML as string (serialize if dict)
+        yaml_content_to_store = result.raw_yaml
+        if isinstance(yaml_content_to_store, dict):
+            import yaml as _yaml
+            yaml_content_to_store = _yaml.dump(yaml_content_to_store)
         yaml_version = YAMLVersion(
             job_id=job_id,
             version_number=len(job.yaml_versions) + 1,
-            yaml_content=result.raw_yaml,
+            yaml_content=yaml_content_to_store,
             is_valid=result.success,
-            validation_errors=result.errors if not result.success else None,
-            generated_by=performed_by,
-            generation_metadata={
-                "llm_model": result.llm_metadata.get("model"),
-                "attempt_count": result.attempt_number,
-                "generation_timestamp": result.timestamp.isoformat(),
-                "prompt_length": result.llm_metadata.get("prompt_length"),
-                "response_length": result.llm_metadata.get("response_length"),
-                "validation_errors_count": len(result.errors)
-            },
+            validation_errors=json.dumps(result.errors) if not result.success and result.errors else None,
+            llm_model_used=result.llm_metadata.get("model"),
+            llm_tokens_used=result.llm_metadata.get("tokens_used"),
+            generation_time_seconds=int(generation_time),
+            generation_prompt=result.llm_metadata.get("prompt"),
+            regeneration_reason=performed_by,
             parent_version_id=parent_version_id
         )
         
@@ -361,13 +365,14 @@ class YAMLService:
         version.is_approved = True
         version.approved_by = approved_by
         version.approved_at = datetime.utcnow()
-        version.approval_comments = comments
+        # Store approval comments in reviewer_comments_context (no dedicated column)
+        if comments:
+            version.reviewer_comments_context = comments
         
         # Log validation (approval counts as validation)
         AuditService.log_yaml_validated(
             db=db,
             job_id=job_id,
-            performed_by=approved_by,
             yaml_version_id=version.id,
             is_valid=True
         )

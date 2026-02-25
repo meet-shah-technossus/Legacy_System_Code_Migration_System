@@ -14,7 +14,7 @@ import logging
 from app.models.job import MigrationJob
 from app.models.yaml_version import YAMLVersion
 from app.models.code import GeneratedCode
-from app.core.enums import JobState, TargetLanguage
+from app.core.enums import JobState, TargetLanguage, JobType
 from app.llm.openai_client import OpenAIClient
 from app.llm.prompts import build_code_generation_prompt, build_strict_code_generation_prompt, build_syntax_error_fix_prompt
 from app.services.code_output_parser import CodeOutputParser
@@ -84,15 +84,27 @@ class CodeGenerationService:
         job = self.job_manager.get_job_or_404(db, job_id)
 
         # Validate job state - must be APPROVED or APPROVED_WITH_COMMENTS
-        if job.current_state not in [JobState.APPROVED, JobState.APPROVED_WITH_COMMENTS]:
+        allowed_states = [
+            JobState.APPROVED,
+            JobState.APPROVED_WITH_COMMENTS,
+            JobState.YAML_APPROVED_QUEUED,
+            JobState.CREATED,
+            JobState.CODE_REGENERATE_REQUESTED,
+        ]
+        if job.current_state not in allowed_states:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Cannot generate code. Job is in state {job.current_state.value}. "
-                       f"Must be in APPROVED or APPROVED_WITH_COMMENTS state."
+                detail=(
+                    f"Cannot generate code. Job is in state {job.current_state.value}. "
+                    f"Must be in one of: {[s.value for s in allowed_states]}."
+                )
             )
 
-        # Get approved YAML version
-        yaml_version = self._get_approved_yaml_version(db, job_id)
+        # For Job 2 (CODE_CONVERSION), fetch YAML from parent job
+        yaml_job_id = job_id
+        if job.job_type == JobType.CODE_CONVERSION and job.parent_job_id:
+            yaml_job_id = job.parent_job_id
+        yaml_version = self._get_approved_yaml_version(db, yaml_job_id)
 
         if not yaml_version:
             raise HTTPException(
@@ -260,7 +272,7 @@ class CodeGenerationService:
             YAMLVersion.job_id == job_id,
             YAMLVersion.is_approved == True,
             YAMLVersion.is_valid == True
-        ).order_by(YAMLVersion.created_at.desc()).first()
+        ).order_by(YAMLVersion.generated_at.desc()).first()
 
     def _generate_with_llm(
         self,

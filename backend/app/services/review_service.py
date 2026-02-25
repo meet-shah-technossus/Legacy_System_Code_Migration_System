@@ -11,7 +11,7 @@ from app.models.review import Review, ReviewComment
 from app.models.yaml_version import YAMLVersion
 from app.models.job import MigrationJob
 from app.schemas.review import ReviewSubmit, ReviewCommentCreate
-from app.core.enums import ReviewDecision, JobState
+from app.core.enums import ReviewDecision, JobState, JobType
 from app.services.job_manager import JobManager
 from app.services.audit_service import AuditService
 from app.services.metrics_service import MetricsService
@@ -44,18 +44,27 @@ class ReviewService:
         # Get job and validate state
         job = JobManager.get_job_or_404(db, job_id)
         
-        # Job must be in YAML_GENERATED or UNDER_REVIEW state
-        if job.current_state not in [JobState.YAML_GENERATED, JobState.UNDER_REVIEW]:
+        # Job must be in a valid review state (YAML or code review)
+        allowed_review_states = [
+            JobState.YAML_GENERATED,
+            JobState.UNDER_REVIEW,
+            JobState.CODE_UNDER_REVIEW,
+            JobState.CODE_REGENERATE_REQUESTED
+        ]
+        if job.current_state not in allowed_review_states:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Cannot submit review. Job is in state {job.current_state.value}. "
-                       f"Must be in YAML_GENERATED or UNDER_REVIEW state."
+                       f"Must be in one of: {', '.join([s.value for s in allowed_review_states])}."
             )
         
-        # Validate YAML version exists
+        # For code review jobs, fetch YAML version from parent job
+        yaml_lookup_job_id = job_id
+        if hasattr(job, 'job_type') and job.job_type == JobType.CODE_CONVERSION and job.parent_job_id:
+            yaml_lookup_job_id = job.parent_job_id
         yaml_version = db.query(YAMLVersion).filter(
             YAMLVersion.id == review_data.yaml_version_id,
-            YAMLVersion.job_id == job_id
+            YAMLVersion.job_id == yaml_lookup_job_id
         ).first()
         
         if not yaml_version:
@@ -97,7 +106,7 @@ class ReviewService:
             db.add(comment)
         
         # Handle state transitions based on decision
-        ReviewService._handle_review_decision(db, job, yaml_version, review_data.decision)
+        ReviewService._handle_review_decision(db, job, yaml_version, review_data.decision, review_data)
         
         # Audit log
         AuditService.log_review_submitted(
@@ -137,9 +146,9 @@ class ReviewService:
                 job_id=job_id
             )
         
-        # Track time from YAML generation to review (if YAML version has created_at)
-        if yaml_version.created_at:
-            review_time = (datetime.utcnow() - yaml_version.created_at).total_seconds()
+        # Track time from YAML generation to review (if YAML version has generated_at)
+        if yaml_version.generated_at:
+            review_time = (datetime.utcnow() - yaml_version.generated_at).total_seconds()
             MetricsService.record_timer(
                 db=db,
                 metric_name=MetricsService.REVIEW_TIME,
@@ -158,10 +167,12 @@ class ReviewService:
         db: Session,
         job: MigrationJob,
         yaml_version: YAMLVersion,
-        decision: ReviewDecision
+        decision: ReviewDecision,
+        review_data: ReviewSubmit
     ):
         """Handle state transitions based on review decision."""
         
+        # Handle YAML review decisions
         if decision == ReviewDecision.REJECT_REGENERATE:
             # Transition to REGENERATE_REQUESTED
             if job.current_state == JobState.YAML_GENERATED:
@@ -181,6 +192,7 @@ class ReviewService:
                 performed_by="SYSTEM"
             )
             
+
         elif decision == ReviewDecision.APPROVE:
             # Approve the YAML version
             yaml_version.is_approved = True
@@ -204,7 +216,31 @@ class ReviewService:
             )
             AuditService.log_job_queued(
                 db=db, job_id=job.id,
-                queued_by=review_data.reviewed_by if hasattr(review_data, 'reviewed_by') else None
+                queued_by=getattr(review_data, 'reviewed_by', None)
+            )
+
+        elif decision == ReviewDecision.CODE_APPROVE:
+            # Approve the code version
+            JobManager.transition_state(
+                db=db, job_id=job.id,
+                new_state=JobState.CODE_ACCEPTED, performed_by="SYSTEM"
+            )
+            # Set is_accepted=True on latest code version for this job
+            from app.models.code import GeneratedCode
+            latest_code = db.query(GeneratedCode).filter(
+                GeneratedCode.job_id == job.id,
+                GeneratedCode.is_current == True
+            ).first()
+            if latest_code:
+                latest_code.is_accepted = True
+                db.commit()
+                db.refresh(latest_code)
+
+        elif decision == ReviewDecision.CODE_REJECT_REGENERATE:
+            # Transition to CODE_REGENERATE_REQUESTED
+            JobManager.transition_state(
+                db=db, job_id=job.id,
+                new_state=JobState.CODE_REGENERATE_REQUESTED, performed_by="SYSTEM"
             )
 
         elif decision == ReviewDecision.APPROVE_WITH_COMMENTS:
@@ -230,7 +266,7 @@ class ReviewService:
             )
             AuditService.log_job_queued(
                 db=db, job_id=job.id,
-                queued_by=review_data.reviewed_by if hasattr(review_data, 'reviewed_by') else None
+                queued_by=getattr(review_data, 'reviewed_by', None)
             )
     
     @staticmethod

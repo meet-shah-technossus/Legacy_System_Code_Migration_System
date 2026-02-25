@@ -137,27 +137,41 @@ def download_generated_code(
     from fastapi.responses import Response
     from app.mapping.base_mapper import MappingLoader
     
+
     code = code_service.get_generated_code(db=db, job_id=job_id, code_id=code_id)
-    
+
     if not code:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"No generated code found for job {job_id}"
         )
-    
+
+    # If the requested code is not accepted, check if any accepted version exists for this job
+    if not code.is_accepted:
+        accepted_code = db.query(code.__class__).filter(
+            code.__class__.job_id == job_id,
+            code.__class__.is_accepted == True
+        ).order_by(code.__class__.version_number.desc()).first()
+        if not accepted_code:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Code download is disabled until at least one version is accepted by review."
+            )
+        code = accepted_code
+
     # Determine file extension
     try:
         mapper = MappingLoader.get_mapper(code.target_language)
         file_extension = mapper.get_file_extension()
     except ValueError:
         file_extension = ".txt"
-    
+
     # Generate filename
     from app.services.job_manager import JobManager
     job = JobManager.get_job_or_404(db, job_id)
     base_name = job.source_filename.replace(".bp", "") if job.source_filename else f"job_{job_id}"
     filename = f"{base_name}_migrated{file_extension}"
-    
+
     return Response(
         content=code.code_content,
         media_type="text/plain",
