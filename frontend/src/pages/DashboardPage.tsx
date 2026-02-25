@@ -202,7 +202,7 @@ export default function DashboardPage() {
   const activeJobs = jobs?.filter((j) => ACTIVE_STATES.has(j.current_state)).length ?? 0;
 
   const yamlSuccessRate = metrics
-    ? `${(metrics.yaml_generation.success_rate.success_rate * 100).toFixed(0)}%`
+    ? `${metrics.yaml_generation.success_rate.success_rate.toFixed(0)}%`
     : '—';
 
   // ── Pie: jobs by state ───────────────────────────────────────────────────────

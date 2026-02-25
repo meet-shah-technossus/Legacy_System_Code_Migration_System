@@ -441,10 +441,10 @@ export default function AnalyticsPage() {
   const completeRate = totalJobs > 0 ? formatPercent(completedJobs / totalJobs) : '—';
 
   const yamlSuccessRate = summary
-    ? (summary.yaml_generation.success_rate.success_rate * 100).toFixed(1) + '%'
+    ? summary.yaml_generation.success_rate.success_rate.toFixed(1) + '%'
     : '—';
   const codeSuccessRate = summary
-    ? (summary.code_generation.success_rate.success_rate * 100).toFixed(1) + '%'
+    ? summary.code_generation.success_rate.success_rate.toFixed(1) + '%'
     : '—';
 
   const totalErrors = summary?.errors.total ?? 0;
