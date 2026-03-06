@@ -42,8 +42,8 @@ class JobManager:
             target_language=None,  # Not set for Job 1
             current_state=JobState.CREATED,
             created_by=job_data.created_by,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow()
+            created_at=datetime.now(),
+            updated_at=datetime.now()
         )
 
         db.add(job)
@@ -99,8 +99,8 @@ class JobManager:
             target_language=job_data.target_language,
             current_state=JobState.CREATED,
             created_by=job_data.created_by,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow()
+            created_at=datetime.now(),
+            updated_at=datetime.now()
         )
 
         db.add(job)
@@ -281,7 +281,7 @@ class JobManager:
         for field, value in update_dict.items():
             setattr(job, field, value)
         
-        job.updated_at = datetime.utcnow()
+        job.updated_at = datetime.now()
         
         db.commit()
         db.refresh(job)
@@ -329,11 +329,11 @@ class JobManager:
         # Perform transition
         old_state = job.current_state
         job.current_state = new_state
-        job.updated_at = datetime.utcnow()
+        job.updated_at = datetime.now()
         
         # Set completion timestamp if transitioning to COMPLETED
         if new_state == JobState.COMPLETED:
-            job.completed_at = datetime.utcnow()
+            job.completed_at = datetime.now()
             lang_tag = job.target_language.value if job.target_language else "N/A"
 
             # Calculate job duration

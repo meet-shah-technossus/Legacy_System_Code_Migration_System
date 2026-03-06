@@ -33,7 +33,7 @@ class Review(Base):
     
     # Reviewer Info
     reviewed_by = Column(String(100), nullable=True)  # Future: user ID
-    reviewed_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    reviewed_at = Column(DateTime, default=datetime.now, nullable=False)
     
     # Relationships
     job = relationship("MigrationJob", back_populates="reviews")
@@ -66,7 +66,7 @@ class ReviewComment(Base):
     severity = Column(String(20), nullable=True)  # "critical", "warning", "suggestion"
     
     # Timestamps
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
     
     # Relationship
     review = relationship("Review", back_populates="comments")

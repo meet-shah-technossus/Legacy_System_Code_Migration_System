@@ -96,7 +96,7 @@ class CodeReviewService:
             general_comment=general_comment,
             reviewed_by=reviewed_by,
             triggered_regeneration=triggered_regen,
-            reviewed_at=datetime.utcnow(),
+            reviewed_at=datetime.now(),
         )
         db.add(code_review)
         db.flush()  # get code_review.id without full commit
@@ -298,7 +298,7 @@ class CodeReviewService:
         )
 
         parsed = None  # set inside try block; always defined when new_code is reached
-        start = datetime.utcnow()
+        start = datetime.now()
         try:
             response = self.llm_client.generate_content(prompt)
             if not response or not response.get("text"):
@@ -343,7 +343,7 @@ class CodeReviewService:
                 detail=f"LLM code regeneration failed: {exc}",
             )
 
-        generation_time = (datetime.utcnow() - start).total_seconds()
+        generation_time = (datetime.now() - start).total_seconds()
 
         # Phase 3: assign version_number and set is_current
         max_ver = db.query(func.max(GeneratedCode.version_number)).filter(
@@ -364,7 +364,7 @@ class CodeReviewService:
             llm_model_used=response.get("model"),
             llm_tokens_used=response.get("usage", {}).get("total_tokens"),
             estimated_lines_of_code=len(code_text.split("\n")),
-            generated_at=datetime.utcnow(),
+            generated_at=datetime.now(),
             is_accepted=False,
             # Phase 1 (Structured Output) metadata
             sections_covered=json.dumps(parsed.sections_covered if parsed else []),

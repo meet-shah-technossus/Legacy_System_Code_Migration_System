@@ -83,6 +83,7 @@ import { usePrefsStore } from '../store/prefsStore';
 import { stateLabel, stateColorScheme, languageLabel, formatDateTime, formatDate, timeAgo, formatDuration } from '../utils/format';
 import { useAuthStore } from '../store/authStore';
 import type { JobState, YAMLVersionSummary, TargetLanguage, JobType } from '../types';
+import GenerationProcessingOverlay from '../components/vscode/GenerationProcessingOverlay';
 
 // ─── Workflow Steps ───────────────────────────────────────────────────────────
 
@@ -311,7 +312,11 @@ function YamlVersionsPanel({ jobId, currentState }: { jobId: number; currentStat
   const canRegenerate = currentState === 'REGENERATE_REQUESTED';
 
   return (
-    <Box>
+    <Box position="relative">
+      {/* Generation overlay */}
+      {(generateYAML.isPending || regenerateYAML.isPending) && (
+        <GenerationProcessingOverlay type="yaml" />
+      )}
       {/* Action buttons */}
       <HStack mb={4} spacing={3}>
         {canGenerate && (
@@ -698,7 +703,10 @@ function CodeGenModal({
   return (
     <Modal isOpen={isOpen} onClose={onClose} isCentered>
       <ModalOverlay bg="blackAlpha.600" backdropFilter="blur(4px)" />
-      <ModalContent>
+      <ModalContent position="relative">
+        {generateCode.isPending && (
+          <GenerationProcessingOverlay type="code" language={language} />
+        )}
         <ModalHeader>
           <HStack spacing={2}>
             <Icon as={FiTerminal} color="purple.400" />
@@ -1520,12 +1528,14 @@ export default function JobDetailPage() {
                 )}
               </Tab>
             )}
-            <Tab fontSize="sm">
-              <HStack spacing={1.5}>
-                <Icon as={FiTerminal} boxSize={3.5} />
-                <Text>Generated Code</Text>
-              </HStack>
-            </Tab>
+            {job.job_type === 'CODE_CONVERSION' && (
+              <Tab fontSize="sm">
+                <HStack spacing={1.5}>
+                  <Icon as={FiTerminal} boxSize={3.5} />
+                  <Text>Generated Code</Text>
+                </HStack>
+              </Tab>
+            )}
           </TabList>
           <TabPanels>
             <TabPanel p={5}>
@@ -1541,9 +1551,11 @@ export default function JobDetailPage() {
                 <YamlVersionsPanel jobId={jobId} currentState={job.current_state} />
               </TabPanel>
             )}
-            <TabPanel p={5}>
-              <GeneratedCodePanel jobId={jobId} currentState={job.current_state} />
-            </TabPanel>
+            {job.job_type === 'CODE_CONVERSION' && (
+              <TabPanel p={5}>
+                <GeneratedCodePanel jobId={jobId} currentState={job.current_state} />
+              </TabPanel>
+            )}
           </TabPanels>
         </Tabs>
       </Box>

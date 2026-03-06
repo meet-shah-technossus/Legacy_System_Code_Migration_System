@@ -87,7 +87,7 @@ class ReviewService:
             decision=review_data.decision,
             general_comment=review_data.general_comment,
             reviewed_by=performed_by or review_data.reviewed_by or "SYSTEM",
-            reviewed_at=datetime.utcnow()
+            reviewed_at=datetime.now()
         )
         db.add(review)
         db.flush()  # Get review ID for comments
@@ -101,7 +101,7 @@ class ReviewService:
                 comment_text=comment_data.comment_text,
                 is_blocking=int(comment_data.is_blocking),  # Convert bool to int for SQLite
                 severity=comment_data.severity,
-                created_at=datetime.utcnow()
+                created_at=datetime.now()
             )
             db.add(comment)
         
@@ -148,7 +148,7 @@ class ReviewService:
         
         # Track time from YAML generation to review (if YAML version has generated_at)
         if yaml_version.generated_at:
-            review_time = (datetime.utcnow() - yaml_version.generated_at).total_seconds()
+            review_time = (datetime.now() - yaml_version.generated_at).total_seconds()
             MetricsService.record_timer(
                 db=db,
                 metric_name=MetricsService.REVIEW_TIME,
@@ -196,7 +196,7 @@ class ReviewService:
         elif decision == ReviewDecision.APPROVE:
             # Approve the YAML version
             yaml_version.is_approved = True
-            yaml_version.approved_at = datetime.utcnow()
+            yaml_version.approved_at = datetime.now()
             yaml_version.approved_by = "REVIEWER"
 
             # Transition to APPROVED
@@ -246,7 +246,7 @@ class ReviewService:
         elif decision == ReviewDecision.APPROVE_WITH_COMMENTS:
             # Approve with comments
             yaml_version.is_approved = True
-            yaml_version.approved_at = datetime.utcnow()
+            yaml_version.approved_at = datetime.now()
             yaml_version.approved_by = "REVIEWER"
 
             # Transition to APPROVED_WITH_COMMENTS

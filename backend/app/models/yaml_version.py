@@ -45,7 +45,7 @@ class YAMLVersion(Base):
     approved_by = Column(String(100), nullable=True)
     
     # Timestamps
-    generated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    generated_at = Column(DateTime, default=datetime.now, nullable=False)
     
     # LLM Metadata
     llm_model_used = Column(String(100), nullable=True)

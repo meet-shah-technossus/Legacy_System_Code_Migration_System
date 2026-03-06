@@ -118,6 +118,44 @@ def get_generated_code(
     return GeneratedCodeResponse.model_validate(code)
 
 
+class CodeEditRequest(BaseModel):
+    """Request to manually edit generated code content."""
+    code_content: str = Field(..., min_length=1, description="Updated code content")
+    edited_by: str = Field(..., min_length=1, max_length=255, description="User making the edit")
+    edit_reason: Optional[str] = Field(None, max_length=2000, description="Optional reason for manual edit")
+
+
+@router.patch(
+    "/{job_id}/code",
+    response_model=GeneratedCodeResponse,
+    summary="Manually edit generated code",
+    description="Replace the content of the latest generated code (manual editing). "
+                "This resets code acceptance so it requires re-review."
+)
+def edit_generated_code(
+    job_id: int,
+    request: CodeEditRequest,
+    db: Session = Depends(get_db)
+):
+    """Manually update generated code content and reset for re-review."""
+    code = code_service.get_generated_code(db=db, job_id=job_id)
+    if not code:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No generated code found for job {job_id}"
+        )
+
+    # Update content
+    code.code_content = request.code_content
+
+    # Reset acceptance so it must be reviewed again
+    code.is_accepted = False
+
+    db.commit()
+    db.refresh(code)
+    return GeneratedCodeResponse.model_validate(code)
+
+
 @router.get(
     "/{job_id}/code/download",
     summary="Download generated code as file",
@@ -350,6 +388,8 @@ class CodeVersionSummary(BaseModel):
     validation_tool_available: Optional[bool]
     validation_errors: Optional[List[str]]
     generated_at: datetime
+    # Edit source/reason label (populated on manual/diff-apply versions)
+    reviewer_constraints: Optional[str]
 
     class Config:
         from_attributes = True
@@ -359,7 +399,7 @@ class CodeVersionDetail(CodeVersionSummary):
     """Full detail for a code version, including content."""
     code_content: str
     generation_prompt: Optional[str]
-    reviewer_constraints: Optional[str]
+    # reviewer_constraints is inherited from CodeVersionSummary — do NOT re-declare here
     external_stubs_included: Optional[List[str]]
 
 
@@ -391,6 +431,7 @@ def _summary_from_orm(code: GeneratedCode) -> CodeVersionSummary:
         validation_tool_available=code.validation_tool_available,
         validation_errors=_to_json_list(code.validation_errors),
         generated_at=code.generated_at,
+        reviewer_constraints=code.reviewer_constraints,
     )
 
 
@@ -399,7 +440,7 @@ def _detail_from_orm(code: GeneratedCode) -> CodeVersionDetail:
         **_summary_from_orm(code).model_dump(),
         code_content=code.code_content,
         generation_prompt=code.generation_prompt,
-        reviewer_constraints=code.reviewer_constraints,
+        # reviewer_constraints comes from _summary_from_orm; do NOT pass again
         external_stubs_included=_to_json_list(code.external_stubs_included),
     )
 
@@ -518,3 +559,71 @@ def restore_code_version(
         job_state=job.current_state.value,
         message=f"Version {version_number} restored as current. Job is now CODE_UNDER_REVIEW.",
     )
+
+
+# ─── Manual Create Version (new row, never overwrites) ────────────────────────
+
+class CodeCreateVersionRequest(BaseModel):
+    """Request to save editor content as a brand-new code version."""
+    code_content: str = Field(..., min_length=1, description="Updated code content")
+    edited_by: str = Field(..., min_length=1, max_length=255, description="User creating the version")
+    edit_reason: Optional[str] = Field(
+        None, max_length=2000,
+        description="Auto-label for this version (e.g. 'Manual edit', 'Applied diff v1→v2')"
+    )
+
+
+@router.post(
+    "/{job_id}/code/versions",
+    response_model=CodeVersionDetail,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a new code version manually",
+    description=(
+        "Save editor content as a brand-new code version (auto-increments version_number). "
+        "Marks all previous versions as is_current=False and the new version as is_current=True. "
+        "Sets is_accepted=False so the new version requires re-review."
+    ),
+)
+def create_code_version(
+    job_id: int,
+    request: CodeCreateVersionRequest,
+    db: Session = Depends(get_db),
+):
+    """Manually create a new code version from edited content."""
+    from datetime import datetime as _dt
+
+    # Require at least one pre-existing version to copy metadata from
+    latest = (
+        db.query(GeneratedCode)
+        .filter(GeneratedCode.job_id == job_id)
+        .order_by(GeneratedCode.version_number.desc().nullslast())
+        .first()
+    )
+    if not latest:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No generated code found for job {job_id}. Generate code first.",
+        )
+
+    new_vn = (latest.version_number or 0) + 1
+
+    # Un-mark all existing versions as current
+    db.query(GeneratedCode).filter(GeneratedCode.job_id == job_id).update(
+        {"is_current": False}, synchronize_session="fetch"
+    )
+
+    new_code = GeneratedCode(
+        job_id=job_id,
+        version_number=new_vn,
+        code_content=request.code_content,
+        target_language=latest.target_language,
+        # Store the edit label in reviewer_constraints (re-used as label field)
+        reviewer_constraints=request.edit_reason or "Manual edit",
+        is_current=True,
+        is_accepted=False,
+        generated_at=_dt.now(),
+    )
+    db.add(new_code)
+    db.commit()
+    db.refresh(new_code)
+    return _detail_from_orm(new_code)

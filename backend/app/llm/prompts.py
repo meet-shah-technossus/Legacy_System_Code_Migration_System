@@ -131,6 +131,14 @@ def build_yaml_generation_prompt(
     Returns:
         Complete prompt string for LLM
     """
+    from datetime import datetime
+    # Inject the real current timestamp into the example so the LLM outputs
+    # the actual analysis time instead of the hard-coded placeholder.
+    current_ts = datetime.now().strftime('%Y-%m-%dT%H:%M:%SZ')
+    system_prompt = YAML_GENERATION_SYSTEM_PROMPT.replace(
+        '"2026-02-19T10:30:00Z"', f'"{current_ts}"'
+    )
+
     # Hoist conditional block — backslash escapes not allowed inside f-string {} in Python < 3.12
     additional_context_block = (
         f"**ADDITIONAL CONTEXT:**\n{additional_context}\n"
@@ -138,7 +146,7 @@ def build_yaml_generation_prompt(
         else ""
     )
 
-    prompt = f"""{YAML_GENERATION_SYSTEM_PROMPT}
+    prompt = f"""{system_prompt}
 
 ---
 
@@ -215,7 +223,13 @@ def build_yaml_regeneration_prompt(
 
 """
     
-    prompt = f"""{YAML_GENERATION_SYSTEM_PROMPT}
+    from datetime import datetime
+    current_ts = datetime.now().strftime('%Y-%m-%dT%H:%M:%SZ')
+    system_prompt = YAML_GENERATION_SYSTEM_PROMPT.replace(
+        '"2026-02-19T10:30:00Z"', f'"{current_ts}"'
+    )
+
+    prompt = f"""{system_prompt}
 
 ---
 

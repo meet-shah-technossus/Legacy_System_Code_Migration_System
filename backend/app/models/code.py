@@ -61,7 +61,7 @@ class GeneratedCode(Base):
     is_current = Column(Boolean, nullable=True, default=False)   # True on the latest version
 
     # Timestamps
-    generated_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    generated_at = Column(DateTime, default=datetime.now, nullable=False)
 
     # Review gate — True only after a reviewer explicitly accepts this code
     is_accepted = Column(Boolean, default=False, nullable=False)

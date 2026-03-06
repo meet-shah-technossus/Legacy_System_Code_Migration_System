@@ -191,12 +191,28 @@ def transition_job_state(
         new_state=transition.new_state,
         reason=transition.reason
     )
-    
+
+    # Side-effect: when accepting code directly via this endpoint (bypassing the
+    # review service), ensure the current GeneratedCode row is marked accepted.
+    if transition.new_state == JobState.CODE_ACCEPTED:
+        from app.models.code import GeneratedCode
+        current_code = (
+            db.query(GeneratedCode)
+            .filter(
+                GeneratedCode.job_id == job_id,
+                GeneratedCode.is_current == True,
+            )
+            .first()
+        )
+        if current_code and not current_code.is_accepted:
+            current_code.is_accepted = True
+            db.commit()
+
     # Add counts
     response_data = MigrationJobResponse.model_validate(job)
     response_data.yaml_versions_count = len(job.yaml_versions)
     response_data.reviews_count = len(job.reviews)
-    
+
     return response_data
 
 

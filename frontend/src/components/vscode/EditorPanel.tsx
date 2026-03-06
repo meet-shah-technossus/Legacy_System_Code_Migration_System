@@ -18,10 +18,10 @@ import {
   ModalFooter,
   ModalCloseButton,
   Textarea,
+  Select,
 } from '@chakra-ui/react';
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import type { ComponentType } from 'react';
-import { createPortal } from 'react-dom';
 import { Global } from '@emotion/react';
 import Editor, { DiffEditor } from '@monaco-editor/react';
 import type { OnMount } from '@monaco-editor/react';
@@ -38,14 +38,22 @@ import {
   FiGitMerge,
   FiRotateCcw,
   FiMessageCircle,
+  FiColumns,
+  FiGitCommit,
+  FiEdit,
+  FiSave,
+  FiGitBranch,
+  FiZap,
 } from 'react-icons/fi';
 import { useNavigate } from 'react-router-dom';
 import { VS, useVSColors } from './vscodeTheme';
+import ResizeHandle from './ResizeHandle';
+import VersionDiffPanel from './VersionDiffPanel';
 import { useJob, useParentJob, useJobWithSource, useAddLineComment } from '../../hooks/useJobs';
-import { useLatestYAML } from '../../hooks/useYaml';
-import { useGeneratedCode } from '../../hooks/useCode';
-import { useGenerateYAML } from '../../hooks/useYaml';
-import { useGenerateCode } from '../../hooks/useCode';
+import { useQueryClient, useIsMutating } from '@tanstack/react-query';
+import { useLatestYAML, useGenerateYAML, YAML_KEYS, useEditYAMLVersion, useYAMLVersions, useYAMLVersion, useCreateYAMLVersion, useApproveYAML } from '../../hooks/useYaml';
+import { useGeneratedCode, useGenerateCode, useEditCode, useCodeVersions, useCodeVersion, useCreateCodeVersion } from '../../hooks/useCode';
+import GenerationProcessingOverlay from './GenerationProcessingOverlay';
 import { useSubmitReview } from '../../hooks/useReviews';
 import { useAuthStore } from '../../store/authStore';
 import { stateLabel, monacoLanguage, languageLabel } from '../../utils/format';
@@ -367,11 +375,12 @@ function LoadingState() {
 interface ReviewActionsBarProps {
   isJob2: boolean;
   isPending: boolean;
+  versionNum?: number;
   onInstantApprove: () => void;
   onOpenModal: (decision: ReviewDecision) => void;
 }
 
-function ReviewActionsBar({ isJob2, isPending, onInstantApprove, onOpenModal }: ReviewActionsBarProps) {
+function ReviewActionsBar({ isJob2, isPending, versionNum, onInstantApprove, onOpenModal }: ReviewActionsBarProps) {
   const colors = useVSColors();
   if (isJob2) {
     return (
@@ -398,7 +407,7 @@ function ReviewActionsBar({ isJob2, isPending, onInstantApprove, onOpenModal }: 
           isLoading={isPending}
           onClick={onInstantApprove}
         >
-          Accept Code
+          Accept Code{versionNum ? ` v${versionNum}` : ''}
         </Button>
         <Button
           size="xs"
@@ -444,7 +453,7 @@ function ReviewActionsBar({ isJob2, isPending, onInstantApprove, onOpenModal }: 
         isLoading={isPending}
         onClick={onInstantApprove}
       >
-        Approve
+        Approve{versionNum ? ` v${versionNum}` : ''}
       </Button>
       <Button
         size="xs"
@@ -460,7 +469,7 @@ function ReviewActionsBar({ isJob2, isPending, onInstantApprove, onOpenModal }: 
         borderColor="rgba(246,173,85,0.4)"
         _hover={{ bg: 'rgba(246,173,85,0.08)' }}
       >
-        Approve w/ Comments
+        Approve w/ Comments{versionNum ? ` v${versionNum}` : ''}
       </Button>
       <Button
         size="xs"
@@ -494,6 +503,9 @@ interface MonacoViewProps {
   /** Which code surface this editor shows */
   codeType: 'yaml' | 'generated_code';
   onAddLineComment: (c: PendingLineComment) => void;
+  /** When true, makes the editor writable and reports changes via onContentChange */
+  editMode?: boolean;
+  onContentChange?: (newContent: string) => void;
 }
 
 /**
@@ -514,26 +526,28 @@ const GLYPH_CSS = `
   }
 `;
 
-function MonacoView({ content, language, onMetrics, pendingLineComments, codeType, onAddLineComment }: MonacoViewProps) {
+function MonacoView({ content, language, onMetrics, pendingLineComments, codeType, onAddLineComment, editMode = false, onContentChange }: MonacoViewProps) {
   const colors = useVSColors();
   /* ── refs ─────────────────────────────────────────────────────── */
-  const editorRef       = useRef<Parameters<OnMount>[0] | null>(null);
-  const decorationsRef  = useRef<ReturnType<Parameters<OnMount>[0]['createDecorationsCollection']> | null>(null);
-  const viewZoneIdRef   = useRef<string | null>(null);
-  const commentDomRef   = useRef<HTMLDivElement | null>(null);
-  const containerRef    = useRef<HTMLDivElement>(null);
+  const editorRef           = useRef<Parameters<OnMount>[0] | null>(null);
+  const decorationsRef      = useRef<ReturnType<Parameters<OnMount>[0]['createDecorationsCollection']> | null>(null);
+  const containerRef        = useRef<HTMLDivElement>(null);
+  // Tracks whether the pointer is currently over the "+" button overlay so we
+  // can avoid clearing hoverLine in the Monaco onMouseMove handler (which would
+  // cause the button to flicker on/off while being hovered).
+  const isHoveringButton    = useRef(false);
 
   /* ── local state ─────────────────────────────────────────────── */
   const [hoverLine,       setHoverLine]       = useState<number | null>(null);
   const [hoverY,          setHoverY]          = useState<number>(0);
   const [commentFormLine, setCommentFormLine] = useState<number | null>(null);
+  const [commentFormY,    setCommentFormY]    = useState<number>(0);
   const [commentText,     setCommentText]     = useState('');
 
   /* ── glyph-margin decorations (amber dot on commented lines) ─── */
   useEffect(() => {
     const ed = editorRef.current;
     if (!ed || !decorationsRef.current) return;
-    // Need monaco Range — pull it from the editor's own model API
     const model = ed.getModel();
     if (!model) return;
 
@@ -552,40 +566,10 @@ function MonacoView({ content, language, onMetrics, pendingLineComments, codeTyp
     );
   }, [pendingLineComments]);
 
-  /* ── view zone for inline comment form ───────────────────────── */
-  useEffect(() => {
-    const ed = editorRef.current;
-    if (!ed) return;
-
-    ed.changeViewZones(accessor => {
-      // Always remove previous zone first
-      if (viewZoneIdRef.current) {
-        accessor.removeZone(viewZoneIdRef.current);
-        viewZoneIdRef.current = null;
-        commentDomRef.current = null;
-      }
-
-      if (commentFormLine != null) {
-        const domNode = document.createElement('div');
-        commentDomRef.current = domNode;
-        const id = accessor.addZone({
-          afterLineNumber: commentFormLine,
-          heightInPx: 92,
-          domNode,
-          suppressMouseDown: true,
-        });
-        viewZoneIdRef.current = id;
-      }
-    });
-
-    // Force layout to reflow view zone
-    editorRef.current?.layout();
-  }, [commentFormLine]);
-
   /* ── handlers ────────────────────────────────────────────────── */
   const openForm = (lineNumber: number, y: number) => {
     setCommentFormLine(lineNumber);
-    setHoverY(y);
+    setCommentFormY(y);
     setHoverLine(null);
     setCommentText('');
   };
@@ -621,20 +605,24 @@ function MonacoView({ content, language, onMetrics, pendingLineComments, codeTyp
     // Gutter hover → show + button
     //   MouseTargetType.GUTTER_LINE_NUMBERS = 3
     //   MouseTargetType.GUTTER_GLYPH_MARGIN = 2
-    editor.onMouseMove(e => {
+    editor.onMouseMove((e: Parameters<Parameters<typeof editor.onMouseMove>[0]>[0]) => {
       const { type, position } = e.target as { type: number; position?: { lineNumber: number } };
       if ((type === 3 || type === 2) && position) {
-        // e.event.posy is clientY; subtract container top to get editor-relative Y
         const rect = containerRef.current?.getBoundingClientRect();
         const relY = rect ? e.event.posy - rect.top : e.event.posy;
         setHoverLine(position.lineNumber);
         setHoverY(relY);
-      } else {
+      } else if (!isHoveringButton.current) {
+        // Only clear when the pointer is NOT over the "+" button overlay;
+        // avoids the gutter→button flicker caused by Monaco reporting a
+        // non-gutter target as soon as the pointer enters our React overlay.
         setHoverLine(null);
       }
     });
 
-    editor.onMouseLeave(() => setHoverLine(null));
+    editor.onMouseLeave(() => {
+      if (!isHoveringButton.current) setHoverLine(null);
+    });
   };
 
   /* ── render ──────────────────────────────────────────────────── */
@@ -650,7 +638,7 @@ function MonacoView({ content, language, onMetrics, pendingLineComments, codeTyp
           value={content}
           theme="vs-dark"
           options={{
-            readOnly: true,
+            readOnly: !editMode,
             minimap: { enabled: true, scale: 1 },
             fontSize: 13,
             fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
@@ -663,7 +651,7 @@ function MonacoView({ content, language, onMetrics, pendingLineComments, codeTyp
             cursorBlinking: 'blink',
             folding: true,
             glyphMargin: true,   // ← enabled for comment dots + hover button
-            contextmenu: false,
+            contextmenu: !editMode ? false : true,
             scrollbar: {
               vertical: 'auto',
               horizontal: 'auto',
@@ -671,8 +659,9 @@ function MonacoView({ content, language, onMetrics, pendingLineComments, codeTyp
               horizontalScrollbarSize: 6,
             },
             padding: { top: 8 },
-            domReadOnly: true,
+            domReadOnly: !editMode,
           }}
+          onChange={editMode ? (val) => { if (onContentChange) onContentChange(val ?? ''); } : undefined}
           onMount={handleMount}
         />
 
@@ -692,6 +681,8 @@ function MonacoView({ content, language, onMetrics, pendingLineComments, codeTyp
             justifyContent="center"
             cursor="pointer"
             onClick={() => openForm(hoverLine, hoverY)}
+            onMouseEnter={() => { isHoveringButton.current = true; }}
+            onMouseLeave={() => { isHoveringButton.current = false; setHoverLine(null); }}
             _hover={{ bg: '#005fa3' }}
             userSelect="none"
             fontSize="16px"
@@ -704,83 +695,86 @@ function MonacoView({ content, language, onMetrics, pendingLineComments, codeTyp
           </Box>
         )}
 
-        {/* ── Inline comment form rendered into the Monaco view zone ── */}
-        {commentFormLine != null && commentDomRef.current &&
-          createPortal(
-            <Box
-              bg={colors.panel}
-              border={`1px solid ${colors.statusBar}`}
-              borderRadius="6px"
-              mx="8px"
-              mt="4px"
-              p="8px"
-              display="flex"
-              flexDirection="column"
-              gap="6px"
-              boxShadow="0 2px 8px rgba(0,0,0,0.4)"
-            >
-              <Text fontSize="11px" color="#66b3e8" fontFamily="mono" userSelect="none">
-                ＃L{commentFormLine}
-              </Text>
-              <textarea
-                value={commentText}
-                onChange={e => setCommentText(e.target.value)}
-                placeholder="Add a comment…"
-                // eslint-disable-next-line jsx-a11y/no-autofocus
-                autoFocus
+        {/* ── Inline comment form — pure React overlay (no view zone portal) ── */}
+        {commentFormLine != null && (
+          <Box
+            position="absolute"
+            left="50px"
+            right="10px"
+            top={`${commentFormY + 4}px`}
+            zIndex={20}
+            bg={colors.panel}
+            border={`1px solid ${colors.statusBar}`}
+            borderRadius="6px"
+            p="8px"
+            display="flex"
+            flexDirection="column"
+            gap="6px"
+            boxShadow="0 4px 16px rgba(0,0,0,0.55)"
+            // Stop click events from reaching Monaco (which would steal focus)
+            onMouseDown={e => e.stopPropagation()}
+            onClick={e => e.stopPropagation()}
+          >
+            <Text fontSize="11px" color="#66b3e8" fontFamily="mono" userSelect="none">
+              ＃L{commentFormLine}
+            </Text>
+            <textarea
+              value={commentText}
+              onChange={e => setCommentText(e.target.value)}
+              placeholder="Add a comment…"
+              // eslint-disable-next-line jsx-a11y/no-autofocus
+              autoFocus
+              style={{
+                background: 'rgba(0,0,0,0.3)',
+                border: '1px solid rgba(255,255,255,0.12)',
+                borderRadius: '4px',
+                color: '#cccccc',
+                fontSize: '12px',
+                fontFamily: 'inherit',
+                padding: '5px 7px',
+                resize: 'none',
+                height: '36px',
+                outline: 'none',
+                width: '100%',
+                boxSizing: 'border-box',
+              }}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitComment(); }
+                if (e.key === 'Escape') cancelForm();
+              }}
+            />
+            <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end' }}>
+              <button
+                onClick={cancelForm}
                 style={{
-                  background: 'rgba(0,0,0,0.3)',
-                  border: '1px solid rgba(255,255,255,0.12)',
-                  borderRadius: '4px',
-                  color: '#cccccc',
-                  fontSize: '12px',
-                  fontFamily: 'inherit',
-                  padding: '5px 7px',
-                  resize: 'none',
-                  height: '36px',
-                  outline: 'none',
-                  width: '100%',
-                  boxSizing: 'border-box',
+                  background: 'transparent',
+                  border: '1px solid rgba(255,255,255,0.15)',
+                  color: '#888',
+                  borderRadius: '3px',
+                  padding: '2px 10px',
+                  fontSize: '11px',
+                  cursor: 'pointer',
                 }}
-                onKeyDown={e => {
-                  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitComment(); }
-                  if (e.key === 'Escape') cancelForm();
+              >
+                Cancel
+              </button>
+              <button
+                onClick={submitComment}
+                style={{
+                  background: commentText.trim() ? '#007acc' : '#444',
+                  border: 'none',
+                  color: commentText.trim() ? 'white' : '#888',
+                  borderRadius: '3px',
+                  padding: '2px 10px',
+                  fontSize: '11px',
+                  cursor: commentText.trim() ? 'pointer' : 'default',
                 }}
-              />
-              <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end' }}>
-                <button
-                  onClick={cancelForm}
-                  style={{
-                    background: 'transparent',
-                    border: '1px solid rgba(255,255,255,0.15)',
-                    color: '#888',
-                    borderRadius: '3px',
-                    padding: '2px 10px',
-                    fontSize: '11px',
-                    cursor: 'pointer',
-                  }}
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={submitComment}
-                  style={{
-                    background: commentText.trim() ? '#007acc' : '#444',
-                    border: 'none',
-                    color: commentText.trim() ? 'white' : '#888',
-                    borderRadius: '3px',
-                    padding: '2px 10px',
-                    fontSize: '11px',
-                    cursor: commentText.trim() ? 'pointer' : 'default',
-                  }}
-                >
-                  Add
-                </button>
-              </div>
-            </Box>,
-            commentDomRef.current
-          )
-        }
+              >
+                Add
+              </button>
+            </div>
+          </Box>
+        )}
       </Box>
     </>
   );
@@ -799,12 +793,34 @@ interface JobEditorProps {
 function JobEditor({ jobId, pendingLineComments, onAddLineComment, onClearLineComments }: JobEditorProps) {
   const colors   = useVSColors();
   const navigate   = useNavigate();
+  const qc         = useQueryClient();
   const { user }   = useAuthStore();
   const performer  = user?.username ?? 'system';
 
   const [activeTab, setActiveTab] = useState<EditorTab>('yaml');
   const [metrics,   setMetrics]   = useState<{ lines: number; chars: number } | null>(null);
   const [showDiff,  setShowDiff]  = useState(false);
+  const [showSplit, setShowSplit] = useState(false);
+  const [splitLeftPx, setSplitLeftPx] = useState(480);
+  const splitContainerRef = useRef<HTMLDivElement>(null);
+  // Version diff panel
+  const [showVersionDiff, setShowVersionDiff] = useState(false);
+  // Override content (set when user applies a version diff merge or manually edits)
+  const [overrideContent, setOverrideContent] = useState<string | null>(null);
+  // Edit mode (Phase 8: manual editing)
+  const [editMode, setEditMode] = useState(false);
+  // Version switcher — which historical version is currently selected (null = latest)
+  const [selectedYAMLVersionNum, setSelectedYAMLVersionNum] = useState<number | null>(null);
+  const [selectedCodeVersionNum, setSelectedCodeVersionNum] = useState<number | null>(null);
+  // Auto-label carried from diff-apply to the subsequent save
+  const [pendingEditLabel, setPendingEditLabel] = useState<string | null>(null);
+
+  const handleSplitResize = useCallback((delta: number) => {
+    setSplitLeftPx(prev => {
+      const containerWidth = splitContainerRef.current?.clientWidth ?? 960;
+      return Math.max(200, Math.min(containerWidth - 200, prev + delta));
+    });
+  }, []);
 
   // Review modal state
   const [reviewModalDecision, setReviewModalDecision] = useState<ReviewDecision | null>(null);
@@ -838,8 +854,35 @@ function JobEditor({ jobId, pendingLineComments, onAddLineComment, onClearLineCo
   const { data: jobWithSource } = useJobWithSource(isJob2 ? (parentJobId ?? 0) : jobId);
 
   // Review submission + line comment saving
-  const submitReview  = useSubmitReview(jobId);
+  const submitReview   = useSubmitReview(jobId);
   const addLineComment = useAddLineComment(jobId);
+  // Manual edit mutations (legacy — kept for reference; save now uses createVersion)
+  const editYAML = useEditYAMLVersion(yamlSourceId);
+  const editCode = useEditCode(jobId);
+  // Version lists for switcher dropdown
+  const { data: yamlVersionsList } = useYAMLVersions(yamlSourceId, true);
+  const { data: codeVersionsList  } = useCodeVersions(isJob2 ? jobId : 0);
+  // Specific historical version content (when version switcher is used)
+  const { data: specificYAMLVersion, isLoading: specificYAMLLoading } = useYAMLVersion(yamlSourceId, selectedYAMLVersionNum ?? 0);
+  const { data: specificCodeVersion, isLoading: specificCodeLoading  } = useCodeVersion(isJob2 ? jobId : 0, selectedCodeVersionNum);
+  // Create-new-version mutations (saves as a new DB row; never overwrites)
+  const createYAMLVersion = useCreateYAMLVersion(yamlSourceId);
+  const createCodeVersion = useCreateCodeVersion(jobId);
+
+  // ── Generation overlay detection ─────────────────────────────────────────
+  const isGeneratingYAML = useIsMutating({ mutationKey: ['generate-yaml', jobId] }) > 0;
+  const isGeneratingCode = useIsMutating({ mutationKey: ['generate-code', jobId] }) > 0;
+  const isGenerating     = isGeneratingYAML || isGeneratingCode;
+
+  // ── Studio-approve (approve any YAML version regardless of job state) ────
+  // Derived: which YAML version is currently visible in the editor?
+  const activeYAMLVersionNum = selectedYAMLVersionNum ?? (yamlVersion?.version_number ?? 0);
+  const activeCodeVersionNum = selectedCodeVersionNum ?? (generatedCode?.version_number ?? 0);
+  const activeYAMLIsApproved = selectedYAMLVersionNum
+    ? (specificYAMLVersion?.is_approved ?? false)
+    : (yamlVersion?.is_approved ?? false);
+  // Hook must be called unconditionally (React rules)
+  const approveYAMLVersion = useApproveYAML(yamlSourceId, activeYAMLVersionNum);
 
   // ── Tab definitions ──────────────────────────────────────────────────────
   const tabs: Array<{ id: EditorTab; label: string; color: string }> = [
@@ -871,17 +914,61 @@ function JobEditor({ jobId, pendingLineComments, onAddLineComment, onClearLineCo
     if (activeTab === 'yaml') {
       if (yamlLoading) return 'loading';
       if (yamlError || !yamlVersion) return 'generate';
+      // If the user selected a specific (historical) version, wait for it to load
+      if (selectedYAMLVersionNum && specificYAMLLoading) return 'loading';
+      if (selectedYAMLVersionNum && !specificYAMLVersion) return 'loading';
       return 'content';
     } else {
       if (codeLoading) return 'loading';
       if (codeError || !generatedCode) return 'generate';
+      // If the user selected a specific (historical) version, wait for it to load
+      if (selectedCodeVersionNum && specificCodeLoading) return 'loading';
+      if (selectedCodeVersionNum && !specificCodeVersion) return 'loading';
       return 'content';
     }
   })();
 
-  const content      = activeTab === 'yaml' ? (yamlVersion?.yaml_content ?? '') : (generatedCode?.code_content ?? '');
+  const content      = overrideContent ?? (activeTab === 'yaml'
+    ? (selectedYAMLVersionNum ? (specificYAMLVersion?.yaml_content ?? '') : (yamlVersion?.yaml_content ?? ''))
+    : (selectedCodeVersionNum ? (specificCodeVersion?.code_content  ?? '') : (generatedCode?.code_content ?? '')));
   const monacoLang   = activeTab === 'yaml' ? 'yaml' : monacoLanguage(job?.target_language ?? 'PYTHON');
   const languageName = activeTab === 'yaml' ? 'YAML' : languageLabel(job?.target_language ?? null);
+
+  // Approve-YAML bar removed — standard approval flows are sufficient
+  // const showApproveYAMLBar = ...
+
+  // Next-version number shown on the draft commit button
+  const nextYAMLVersionNum = yamlVersionsList && yamlVersionsList.length > 0
+    ? Math.max(...yamlVersionsList.map(v => v.version_number)) + 1
+    : (yamlVersion?.version_number ?? 0) + 1;
+  const nextCodeVersionNum = codeVersionsList && codeVersionsList.length > 0
+    ? Math.max(...codeVersionsList.map(v => v.version_number ?? 0)) + 1
+    : ((generatedCode as any)?.version_number ?? 0) + 1;
+  const nextVersionNum = activeTab === 'yaml' ? nextYAMLVersionNum : nextCodeVersionNum;
+
+  // Commit the in-browser draft as a new DB version
+  const handleCommitDraft = async () => {
+    if (!overrideContent) return;
+    const editReason = pendingEditLabel ?? 'Manual edit';
+    if (activeTab === 'yaml') {
+      await createYAMLVersion.mutateAsync({
+        yaml_content: overrideContent,
+        edited_by: performer,
+        edit_reason: editReason,
+      });
+    } else {
+      await createCodeVersion.mutateAsync({
+        code_content: overrideContent,
+        edited_by: performer,
+        edit_reason: editReason,
+      });
+    }
+    setOverrideContent(null);
+    setEditMode(false);
+    setPendingEditLabel(null);
+    setSelectedYAMLVersionNum(null);
+    setSelectedCodeVersionNum(null);
+  };
 
   // ── Diff content ──────────────────────────────────────────────────────────
   // YAML tab: Pick Basic source → YAML  │  Code tab: YAML → generated code
@@ -901,8 +988,27 @@ function JobEditor({ jobId, pendingLineComments, onAddLineComment, onClearLineCo
   const reviewableCode = job.current_state === 'CODE_GENERATED'  || job.current_state === 'CODE_UNDER_REVIEW';
   const showReviewBar  = showContent === 'content' && (reviewableYAML || reviewableCode);
 
+  // Post-approval CTAs (placed after showReviewBar to avoid temporal dead zone)
+  const showGenerateCodeCTA = showContent === 'content'
+    && activeTab === 'yaml'
+    && !isJob2
+    && activeYAMLIsApproved
+    && activeYAMLVersionNum > 0
+    && !showReviewBar;
+  const showDownloadCodeCTA = showContent === 'content'
+    && activeTab === 'code'
+    && isJob2
+    && !!(generatedCode?.is_accepted)
+    && !showReviewBar;
+
   const handleReview = async (decision: ReviewDecision, comment?: string) => {
-    const versionId = yamlVersion?.id ?? generatedCode?.yaml_version_id ?? 0;
+    // Use the DB id of the version currently displayed, not always the latest.
+    // For YAML tab: prefer specificYAMLVersion (when user has picked a specific version)
+    //               fall back to yamlVersion (the latest, when no explicit selection).
+    // For Code tab: use the yaml_version_id associated with the current code entry.
+    const versionId = activeTab === 'yaml'
+      ? (specificYAMLVersion?.id ?? yamlVersion?.id ?? 0)
+      : (generatedCode?.yaml_version_id ?? 0);
     // Save pending line comments first
     for (const lc of pendingLineComments) {
       const payload: LineCommentCreate = {
@@ -931,6 +1037,12 @@ function JobEditor({ jobId, pendingLineComments, onAddLineComment, onClearLineCo
       },
       {
         onSuccess: () => {
+          // For Job 2, useSubmitReview invalidates ['yaml', jobId] (Job 2 ID) but
+          // the YAML panel actually queries the *parent* job's YAML. Force-invalidate
+          // the parent's YAML so the Studio reflects the approved state immediately.
+          if (isJob2 && parentJobId) {
+            qc.invalidateQueries({ queryKey: YAML_KEYS.all(parentJobId) });
+          }
           onClearLineComments();
           setGeneralComment('');
           setReviewModalDecision(null);
@@ -940,7 +1052,14 @@ function JobEditor({ jobId, pendingLineComments, onAddLineComment, onClearLineCo
   };
 
   return (
-    <Flex direction="column" h="100%" overflow="hidden">
+    <Flex direction="column" h="100%" overflow="hidden" position="relative">
+      {/* Generation Processing Overlay */}
+      {isGenerating && (
+        <GenerationProcessingOverlay
+          type={isGeneratingCode ? 'code' : 'yaml'}
+          language={job?.target_language}
+        />
+      )}
       {/* Tab Bar */}
       <Flex
         bg={colors.tabBar}
@@ -955,12 +1074,69 @@ function JobEditor({ jobId, pendingLineComments, onAddLineComment, onClearLineCo
             label={tab.label}
             iconColor={tab.color}
             isActive={activeTab === tab.id}
-            onClick={() => { setActiveTab(tab.id); setMetrics(null); }}
+            onClick={() => {
+                setActiveTab(tab.id);
+                setMetrics(null);
+                setOverrideContent(null);
+                setEditMode(false);
+                setShowVersionDiff(false);
+                setSelectedYAMLVersionNum(null);
+                setSelectedCodeVersionNum(null);
+                setPendingEditLabel(null);
+              }}
           />
         ))}
 
         {/* Spacer + action buttons */}
         <Flex flex={1} justify="flex-end" align="center" pr={2} pb="1px" gap="2px">
+          {/* ── Version switcher ─────────────────────────────────────────── */}
+          {showContent === 'content' && (() => {
+            const vList = activeTab === 'yaml'
+              ? (yamlVersionsList ?? []).map(v => ({
+                  num: v.version_number,
+                  label: `v${v.version_number}${v.is_approved ? ' ✓' : ''}`,
+                }))
+              : (codeVersionsList ?? []).map(v => ({
+                  num: v.version_number ?? 0,
+                  label: `v${v.version_number}${v.is_accepted ? ' ✓' : (v.is_current ? ' ●' : '')}`,
+                }));
+            const activeVNum = activeTab === 'yaml' ? selectedYAMLVersionNum : selectedCodeVersionNum;
+            const latestNum  = vList[0]?.num ?? null;   // list is newest-first
+            const displayVal = activeVNum ?? latestNum ?? '';
+            if (vList.length < 2) return null; // no switcher when only one version
+            return (
+              <Tooltip
+                label={`Switch to a different version (viewing ${activeVNum ? `v${activeVNum}` : 'latest'})`}
+                hasArrow placement="bottom" openDelay={500}
+              >
+                <Select
+                  size="xs"
+                  value={displayVal}
+                  onChange={e => {
+                    const vn = Number(e.target.value);
+                    const goLatest = vn === latestNum;
+                    if (activeTab === 'yaml') setSelectedYAMLVersionNum(goLatest ? null : vn);
+                    else setSelectedCodeVersionNum(goLatest ? null : vn);
+                    setOverrideContent(null);
+                    setEditMode(false);
+                    setPendingEditLabel(null);
+                  }}
+                  w="68px"
+                  bg={colors.input}
+                  borderColor={activeVNum ? '#7c3aed' : colors.inputBorder}
+                  color={activeVNum ? '#c4b5fd' : colors.fg}
+                  fontSize="10px"
+                  h="22px"
+                  flexShrink={0}
+                  _hover={{ borderColor: '#7c3aed' }}
+                >
+                  {vList.map(v => (
+                    <option key={v.num} value={v.num}>{v.label}</option>
+                  ))}
+                </Select>
+              </Tooltip>
+            );
+          })()}
           {/* Diff toggle — only when content is loaded */}
           {showContent === 'content' && (
             <Tooltip label={showDiff ? 'Hide diff' : 'Show diff (source → output)'} hasArrow placement="bottom" openDelay={500}>
@@ -973,7 +1149,63 @@ function JobEditor({ jobId, pendingLineComments, onAddLineComment, onClearLineCo
                 bg={showDiff ? '#005fa3' : undefined}
                 _hover={{ color: colors.fgActive, bg: showDiff ? '#007acc' : colors.hover }}
                 minW="22px" h="22px"
-                onClick={() => setShowDiff(v => !v)}
+                onClick={() => { setShowDiff(v => !v); if (showSplit) setShowSplit(false); }}
+              />
+            </Tooltip>
+          )}
+          {/* Split view toggle — only when content is loaded and not in diff mode */}
+          {showContent === 'content' && !showDiff && (
+            <Tooltip
+              label={showSplit ? 'Close split view' : (isJob2 ? 'Split: YAML ↔ Code' : 'Split: Source ↔ YAML')}
+              hasArrow placement="bottom" openDelay={500}
+            >
+              <IconButton
+                aria-label="Toggle split view"
+                icon={<Icon as={FiColumns as ComponentType} boxSize="12px" />}
+                size="xs" variant={showSplit ? 'solid' : 'ghost'}
+                colorScheme={showSplit ? 'teal' : undefined}
+                color={showSplit ? undefined : colors.fgMuted}
+                bg={showSplit ? '#147a6e' : undefined}
+                _hover={{ color: colors.fgActive, bg: showSplit ? '#0d9488' : colors.hover }}
+                minW="22px" h="22px"
+                onClick={() => setShowSplit(v => !v)}
+              />
+            </Tooltip>
+          )}
+          {/* Edit mode toggle — Save/Discard moved to draft ribbon below */}
+          {showContent === 'content' && !showDiff && !showSplit && (
+            <Tooltip
+              label={editMode ? 'Exit edit mode (changes stay in draft)' : 'Edit content manually'}
+              hasArrow placement="bottom" openDelay={500}
+            >
+              <IconButton
+                aria-label={editMode ? 'Exit edit mode' : 'Edit mode'}
+                icon={<Icon as={FiEdit as ComponentType} boxSize="12px" />}
+                size="xs"
+                variant={editMode ? 'solid' : 'ghost'}
+                colorScheme={editMode ? 'orange' : undefined}
+                color={editMode ? undefined : colors.fgMuted}
+                _hover={{ color: editMode ? undefined : colors.fgActive, bg: editMode ? undefined : colors.hover }}
+                minW="22px" h="22px"
+                onClick={() => setEditMode(v => !v)}
+              />
+            </Tooltip>
+          )}
+          {showContent === 'content' && !showDiff && !showSplit && (
+            <Tooltip
+              label={showVersionDiff ? 'Close version diff' : 'Compare versions (GitHub-style diff)'}
+              hasArrow placement="bottom" openDelay={500}
+            >
+              <IconButton
+                aria-label="Toggle version diff"
+                icon={<Icon as={FiGitCommit as ComponentType} boxSize="12px" />}
+                size="xs" variant={showVersionDiff ? 'solid' : 'ghost'}
+                colorScheme={showVersionDiff ? 'purple' : undefined}
+                color={showVersionDiff ? undefined : colors.fgMuted}
+                bg={showVersionDiff ? '#5a2d82' : undefined}
+                _hover={{ color: colors.fgActive, bg: showVersionDiff ? '#7c3aed' : colors.hover }}
+                minW="22px" h="22px"
+                onClick={() => setShowVersionDiff(v => !v)}
               />
             </Tooltip>
           )}
@@ -1071,15 +1303,230 @@ function JobEditor({ jobId, pendingLineComments, onAddLineComment, onClearLineCo
         <ReviewActionsBar
           isJob2={isJob2}
           isPending={submitReview.isPending || addLineComment.isPending}
+          versionNum={isJob2 ? activeCodeVersionNum : activeYAMLVersionNum}
           onInstantApprove={() => handleReview(isJob2 ? 'CODE_APPROVE' : 'APPROVE')}
           onOpenModal={(d) => { setReviewModalDecision(d); setGeneralComment(''); }}
         />
       )}
 
+      {/* Post-approval: Job 1 YAML approved — offer to send to code generation */}
+      {showGenerateCodeCTA && (
+        <Flex
+          align="center"
+          justify="space-between"
+          px={4}
+          py="6px"
+          bg="rgba(34,197,94,0.10)"
+          borderBottom="1px solid rgba(34,197,94,0.28)"
+          flexShrink={0}
+          gap={3}
+        >
+          <Flex align="center" gap={2}>
+            <Icon as={FiCheckCircle as ComponentType} color="green.300" boxSize="14px" />
+            <Text fontSize="12px" color="green.200" fontWeight="medium">
+              YAML v{activeYAMLVersionNum} is approved
+            </Text>
+            <Text fontSize="11px" color={colors.fgMuted}>
+              — ready to send to code generation agent
+            </Text>
+          </Flex>
+          <HStack spacing={2}>
+            <Tooltip label="Open job detail to trigger code generation for each target language" hasArrow placement="top">
+              <Button
+                size="xs"
+                colorScheme="green"
+                bg="green.700"
+                _hover={{ bg: 'green.600' }}
+                leftIcon={<Icon as={FiZap as ComponentType} boxSize="10px" />}
+                onClick={() => navigate(`/jobs/${jobId}`)}
+              >
+                Go to Code Generation Jobs
+              </Button>
+            </Tooltip>
+          </HStack>
+        </Flex>
+      )}
+
+      {/* Post-approval: Job 2 code accepted — prominent download CTA */}
+      {showDownloadCodeCTA && (
+        <Flex
+          align="center"
+          justify="space-between"
+          px={4}
+          py="6px"
+          bg="rgba(34,197,94,0.10)"
+          borderBottom="1px solid rgba(34,197,94,0.28)"
+          flexShrink={0}
+          gap={3}
+        >
+          <Flex align="center" gap={2}>
+            <Icon as={FiCheckCircle as ComponentType} color="green.300" boxSize="14px" />
+            <Text fontSize="12px" color="green.200" fontWeight="medium">
+              Code is accepted
+            </Text>
+            <Text fontSize="11px" color={colors.fgMuted}>
+              — download the final {job?.target_language ?? 'target'} source file
+            </Text>
+          </Flex>
+          <HStack spacing={2}>
+            <Button
+              size="xs"
+              colorScheme="green"
+              bg="green.700"
+              _hover={{ bg: 'green.600' }}
+              leftIcon={<Icon as={FiDownload as ComponentType} boxSize="10px" />}
+              as="a"
+              href={codeApi.downloadUrl(jobId)}
+              download
+            >
+              Download {job?.target_language ?? 'Code'}
+            </Button>
+          </HStack>
+        </Flex>
+      )}
+
+      {/* Draft ribbon — visible whenever there are uncommitted changes */}
+      {overrideContent !== null && showContent === 'content' && !showDiff && !showSplit && (
+        <Flex
+          align="center"
+          justify="space-between"
+          px={4}
+          py="6px"
+          bg="rgba(234,179,8,0.10)"
+          borderBottom="1px solid rgba(234,179,8,0.28)"
+          flexShrink={0}
+          gap={3}
+        >
+          <Flex align="center" gap={2}>
+            <Icon as={FiGitBranch as ComponentType} color="yellow.300" boxSize="13px" />
+            <Text fontSize="12px" color="yellow.200" fontWeight="medium">Unsaved draft</Text>
+            <Text fontSize="11px" color={colors.fgMuted}>· {pendingEditLabel ?? 'Manual edit'}</Text>
+            {editMode && (
+              <Badge colorScheme="orange" fontSize="9px" px={1.5} py={0.5} borderRadius="3px">
+                Editing
+              </Badge>
+            )}
+          </Flex>
+          <HStack spacing={2}>
+            <Text fontSize="10px" color={colors.fgMuted}>→ will save as v{nextVersionNum}</Text>
+            <Tooltip label={`Write all draft changes to database as version ${nextVersionNum}`} hasArrow placement="top">
+              <Button
+                size="xs"
+                colorScheme="yellow"
+                leftIcon={<Icon as={FiGitBranch as ComponentType} boxSize="10px" />}
+                isLoading={createYAMLVersion.isPending || createCodeVersion.isPending}
+                onClick={handleCommitDraft}
+              >
+                Commit as v{nextVersionNum}
+              </Button>
+            </Tooltip>
+            <Tooltip label="Discard all unsaved draft changes" hasArrow placement="top">
+              <IconButton
+                aria-label="Discard draft"
+                icon={<Icon as={FiX as ComponentType} boxSize="11px" />}
+                size="xs"
+                variant="ghost"
+                color="#fc8181"
+                _hover={{ bg: 'rgba(252,129,129,0.12)' }}
+                minW="22px" h="22px"
+                onClick={() => { setOverrideContent(null); setEditMode(false); setPendingEditLabel(null); }}
+              />
+            </Tooltip>
+          </HStack>
+        </Flex>
+      )}
+
       {/* Main content */}
       {showContent === 'loading' && <LoadingState />}
       {showContent === 'generate' && <GenerateCTA job={job} />}
-      {showContent === 'content' && !showDiff && (
+
+      {/* Split view: source ↔ output side-by-side with draggable divider */}
+      {showContent === 'content' && !showDiff && showSplit && (
+        <Flex ref={splitContainerRef} flex={1} overflow="hidden" minH={0}>
+          {/* Left pane — "input" to this conversion step */}
+          <Box
+            style={{ width: `${splitLeftPx}px`, minWidth: '200px' }}
+            overflow="hidden"
+            flexShrink={0}
+            borderRight={`1px solid ${colors.panelBorder}`}
+            position="relative"
+            display="flex"
+            flexDirection="column"
+          >
+            {/* Left pane label */}
+            <Box
+              position="absolute"
+              top={0}
+              left={0}
+              right={0}
+              h="20px"
+              bg="rgba(0,0,0,0.35)"
+              display="flex"
+              alignItems="center"
+              px={2}
+              zIndex={5}
+              pointerEvents="none"
+            >
+              <Text fontSize="10px" color={colors.fgMuted} fontFamily="mono" userSelect="none">
+                {activeTab === 'yaml'
+                  ? `📄 ${job.source_filename ?? 'source.pick'} — original source`
+                  : '📋 schema.yaml — YAML reference'}
+              </Text>
+            </Box>
+            <MonacoView
+              content={
+                activeTab === 'yaml'
+                  ? (jobWithSource?.original_source_code ?? '')
+                  : (yamlVersion?.yaml_content ?? '')
+              }
+              language={activeTab === 'yaml' ? 'plaintext' : 'yaml'}
+              onMetrics={() => undefined}
+              pendingLineComments={[]}
+              codeType={activeTab === 'yaml' ? 'yaml' : 'generated_code'}
+              onAddLineComment={() => undefined}
+            />
+          </Box>
+
+          {/* Draggable divider */}
+          <ResizeHandle direction="horizontal" onResize={handleSplitResize} />
+
+          {/* Right pane — output / active content */}
+          <Box flex={1} overflow="hidden" minW={0} position="relative" display="flex" flexDirection="column">
+            <Box
+              position="absolute"
+              top={0}
+              left={0}
+              right={0}
+              h="20px"
+              bg="rgba(0,0,0,0.35)"
+              display="flex"
+              alignItems="center"
+              px={2}
+              zIndex={5}
+              pointerEvents="none"
+            >
+              <Text fontSize="10px" color={colors.fgMuted} fontFamily="mono" userSelect="none">
+                {activeTab === 'yaml'
+                  ? '📝 schema.yaml — generated YAML'
+                  : `💻 ${codeFilename(job)} — generated code`}
+              </Text>
+            </Box>
+            <MonacoView
+              content={content}
+              language={monacoLang}
+              onMetrics={(lines, chars) => setMetrics({ lines, chars })}
+              pendingLineComments={pendingLineComments.filter(
+                c => c.codeType === (activeTab === 'yaml' ? 'yaml' : 'generated_code')
+              )}
+              codeType={activeTab === 'yaml' ? 'yaml' : 'generated_code'}
+              onAddLineComment={onAddLineComment}
+            />
+          </Box>
+        </Flex>
+      )}
+
+      {/* Single pane view */}
+      {showContent === 'content' && !showDiff && !showSplit && !showVersionDiff && (
         <MonacoView
           content={content}
           language={monacoLang}
@@ -1089,6 +1536,11 @@ function JobEditor({ jobId, pendingLineComments, onAddLineComment, onClearLineCo
           )}
           codeType={activeTab === 'yaml' ? 'yaml' : 'generated_code'}
           onAddLineComment={onAddLineComment}
+          editMode={editMode}
+          onContentChange={(val) => {
+            setOverrideContent(val);
+            setPendingEditLabel(prev => prev ?? 'Manual edit');
+          }}
         />
       )}
       {showContent === 'content' && showDiff && (
@@ -1110,6 +1562,37 @@ function JobEditor({ jobId, pendingLineComments, onAddLineComment, onClearLineCo
               padding: { top: 8 },
               scrollbar: { verticalScrollbarSize: 6 },
             }}
+          />
+        </Box>
+      )}
+
+      {/* ── Version diff panel — always mounted in content mode so hunk state survives panel close/reopen */}
+      {showContent === 'content' && !showDiff && !showSplit && (
+        <Box
+          flex={1}
+          overflow="hidden"
+          minH={0}
+          // Use CSS visibility instead of conditional rendering — preserves all useState inside VersionDiffPanel
+          display={showVersionDiff ? 'flex' : 'none'}
+          flexDirection="column"
+        >
+          <VersionDiffPanel
+            jobId={isJob2 && activeTab === 'yaml' ? (parentJobId ?? jobId) : jobId}
+            isYaml={activeTab === 'yaml' || !isJob2}
+            currentVersionNum={activeTab === 'yaml' ? activeYAMLVersionNum : activeCodeVersionNum}
+            draftContent={overrideContent}
+            onApply={(merged, fromVer, toVer) => {
+              const hadDraft = overrideContent != null;
+              setOverrideContent(merged);
+              const toLabel = hadDraft ? `v${toVer}+draft` : `v${toVer}`;
+              setPendingEditLabel(prev =>
+                prev
+                  ? `${prev} + diff v${fromVer}→${toLabel}`
+                  : `Applied diff v${fromVer}→${toLabel}`
+              );
+              setShowVersionDiff(false);
+            }}
+            onClose={() => setShowVersionDiff(false)}
           />
         </Box>
       )}

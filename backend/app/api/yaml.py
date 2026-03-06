@@ -192,6 +192,108 @@ def get_latest_yaml(
     return YAMLVersionResponse.from_orm(version)
 
 
+class YAMLEditRequest(BaseModel):
+    """Request to manually edit YAML content."""
+    yaml_content: str = Field(..., min_length=1, description="Updated YAML content")
+    edited_by: str = Field(..., min_length=1, max_length=255, description="User making the edit")
+    edit_reason: Optional[str] = Field(None, max_length=2000, description="Optional reason for manual edit")
+
+
+@router.patch(
+    "/jobs/{job_id}/yaml/versions/{version_number}",
+    response_model=YAMLVersionResponse,
+    summary="Manually edit YAML version content",
+    description="Replace the raw YAML content of a specific version. "
+                "Resets approval so the version requires re-review."
+)
+def edit_yaml_version(
+    job_id: int,
+    version_number: int,
+    request: YAMLEditRequest,
+    db: Session = Depends(get_db)
+):
+    """Manually edit a specific YAML version's content."""
+    from datetime import datetime as _dt
+    version = yaml_service.get_yaml_version(db, job_id, version_number)
+
+    version.yaml_content = request.yaml_content
+    # Re-validate (simple heuristic — presence of required top-level keys)
+    try:
+        from app.services.yaml_validator import YAMLValidator
+        validator = YAMLValidator()
+        is_valid, errors = validator.validate_yaml_content(request.yaml_content)
+    except Exception:
+        is_valid = True
+        errors = None
+
+    version.is_valid = is_valid
+    version.validation_errors = errors if not is_valid else None
+    # Reset approval — requires re-review after manual edit
+    version.is_approved = False
+    version.approved_by = None
+    version.approved_at = None
+
+    db.commit()
+    db.refresh(version)
+    return YAMLVersionResponse.from_orm(version)
+
+
+class YAMLCreateVersionRequest(BaseModel):
+    """Request to manually create a new YAML version (saves as new row, never overwrites)."""
+    yaml_content: str = Field(..., min_length=1, description="YAML content for the new version")
+    edited_by: str = Field(..., min_length=1, max_length=255, description="User creating the version")
+    edit_reason: Optional[str] = Field(None, max_length=2000, description="Label/reason for this version (e.g. 'Manual edit', 'Applied diff v1→v2')")
+
+
+@router.post(
+    "/jobs/{job_id}/yaml/versions",
+    response_model=YAMLVersionResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a new YAML version manually",
+    description=(
+        "Save the current editor content as a brand-new version (auto-increments version_number). "
+        "Never overwrites an existing version. Sets is_approved=False so the new version requires re-review."
+    )
+)
+def create_yaml_version(
+    job_id: int,
+    request: YAMLCreateVersionRequest,
+    db: Session = Depends(get_db)
+):
+    """Create a new YAML version from manually-edited content."""
+    from datetime import datetime as _dt
+
+    # Determine next version number
+    existing = yaml_service.get_yaml_versions(db, job_id, include_invalid=True)
+    new_version_number = max((v.version_number for v in existing), default=0) + 1
+    parent = max(existing, key=lambda v: v.version_number) if existing else None
+
+    # Re-validate content
+    try:
+        from app.services.yaml_validator import YAMLValidator
+        validator = YAMLValidator()
+        is_valid, errors = validator.validate_yaml_content(request.yaml_content)
+    except Exception:
+        is_valid = True
+        errors = None
+
+    new_version = YAMLVersion(
+        job_id=job_id,
+        version_number=new_version_number,
+        yaml_content=request.yaml_content,
+        regeneration_reason=request.edit_reason or "Manual edit",
+        is_valid=is_valid,
+        validation_errors=errors if not is_valid else None,
+        is_approved=False,
+        parent_version_id=parent.id if parent else None,
+        generated_at=_dt.now(),
+    )
+    db.add(new_version)
+    db.commit()
+    db.refresh(new_version)
+    return YAMLVersionResponse.from_orm(new_version)
+
+
 @router.post(
     "/jobs/{job_id}/yaml/versions/{version_number}/approve",
     response_model=YAMLVersionResponse,

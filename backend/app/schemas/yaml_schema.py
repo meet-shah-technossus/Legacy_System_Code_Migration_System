@@ -54,6 +54,12 @@ class FileOperationType(str, Enum):
     READU = "READU"
     WRITEV = "WRITEV"
     SELECT = "SELECT"
+    RELEASE = "RELEASE"
+    LOCATE = "LOCATE"
+    MATREAD = "MATREAD"
+    MATWRITE = "MATWRITE"
+    CLEARFILE = "CLEARFILE"
+    WRITEU = "WRITEU"
 
 
 # Schema Components

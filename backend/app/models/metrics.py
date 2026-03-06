@@ -32,7 +32,7 @@ class Metric(Base):
     tags = Column(Text, nullable=True)  # JSON string of tags for filtering
     
     # Timestamp
-    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    timestamp = Column(DateTime, default=datetime.now, nullable=False, index=True)
     
     def __repr__(self):
         return f"<Metric(id={self.id}, name={self.metric_name}, value={self.value}, timestamp={self.timestamp})>"

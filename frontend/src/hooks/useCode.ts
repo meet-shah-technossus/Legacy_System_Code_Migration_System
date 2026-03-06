@@ -82,11 +82,49 @@ export function useRestoreCodeVersion(jobId: number) {
 export function useGenerateCode(jobId: number) {
   const qc = useQueryClient();
   return useMutation({
+    mutationKey: ['generate-code', jobId],
     mutationFn: (data: CodeGenerationRequest) => codeApi.generate(jobId, data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: CODE_KEYS.all(jobId) });
       qc.invalidateQueries({ queryKey: JOB_KEYS.detail(jobId) });
       toast.success('Code generated successfully');
+    },
+    onError: (err) => {
+      toast.error(getErrorMessage(err));
+    },
+  });
+}
+
+/** Manually edit the generated code content */
+export function useEditCode(jobId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { code_content: string; edited_by: string; edit_reason?: string }) =>
+      codeApi.editCode(jobId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: CODE_KEYS.all(jobId) });
+      qc.invalidateQueries({ queryKey: JOB_KEYS.detail(jobId) });
+      toast.success('Code saved — please re-review');
+    },
+    onError: (err) => {
+      toast.error(getErrorMessage(err));
+    },
+  });
+}
+
+/**
+ * Create a brand-new code version (never overwrites; auto-increments version_number).
+ * The new version becomes is_current=True and resets is_accepted=False.
+ */
+export function useCreateCodeVersion(jobId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { code_content: string; edited_by: string; edit_reason?: string }) =>
+      codeApi.createVersion(jobId, data),
+    onSuccess: (newVersion) => {
+      qc.invalidateQueries({ queryKey: CODE_KEYS.all(jobId) });
+      qc.invalidateQueries({ queryKey: JOB_KEYS.detail(jobId) });
+      toast.success(`Code version ${newVersion.version_number} saved — please re-review`);
     },
     onError: (err) => {
       toast.error(getErrorMessage(err));

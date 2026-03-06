@@ -106,13 +106,13 @@ class YAMLService:
                 logger.info(f"Including review feedback in generation for job {job_id}")
 
         # Track timing
-        start_time = datetime.utcnow()
+        start_time = datetime.now()
         result: YAMLGenerationResult = self.generator.generate_yaml_with_auto_retry(
             pick_basic_code=job.original_source_code,
             original_filename=job.source_filename or "unknown.bp",
             additional_context=additional_context
         )
-        generation_time = (datetime.utcnow() - start_time).total_seconds()
+        generation_time = (datetime.now() - start_time).total_seconds()
         
         # Determine parent version (if this is a regeneration)
         parent_version_id = None
@@ -231,26 +231,32 @@ class YAMLService:
     ) -> List[YAMLVersion]:
         """
         Get all YAML versions for a job.
-        
+
+        For CODE_CONVERSION jobs (Job 2), the YAML lives on the parent Job 1;
+        this method transparently returns the parent's versions.
+
         Args:
             db: Database session
             job_id: Migration job ID
             include_invalid: Include invalid YAML versions
-            
+
         Returns:
             List of YAMLVersion objects
         """
-        # Verify job exists
-        self.job_manager.get_job_or_404(db, job_id)
-        
-        query = db.query(YAMLVersion).filter(YAMLVersion.job_id == job_id)
-        
+        from app.core.enums import JobType
+        job = self.job_manager.get_job_or_404(db, job_id)
+        effective_job_id = job_id
+        if job.job_type == JobType.CODE_CONVERSION and job.parent_job_id:
+            effective_job_id = job.parent_job_id
+
+        query = db.query(YAMLVersion).filter(YAMLVersion.job_id == effective_job_id)
+
         if not include_invalid:
             query = query.filter(YAMLVersion.is_valid == True)
-        
+
         versions = query.order_by(YAMLVersion.version_number.desc()).all()
-        
-        logger.info(f"Retrieved {len(versions)} YAML versions for job {job_id}")
+
+        logger.info(f"Retrieved {len(versions)} YAML versions for job {effective_job_id}")
         return versions
     
     def get_yaml_version(
@@ -261,32 +267,38 @@ class YAMLService:
     ) -> YAMLVersion:
         """
         Get a specific YAML version.
-        
+
+        For CODE_CONVERSION jobs (Job 2), the YAML lives on the parent Job 1;
+        this method transparently redirects to the parent's version.
+
         Args:
             db: Database session
             job_id: Migration job ID
             version_number: Version number to retrieve
-            
+
         Returns:
             YAMLVersion object
-            
+
         Raises:
             HTTPException: If version not found
         """
-        # Verify job exists
-        self.job_manager.get_job_or_404(db, job_id)
-        
+        from app.core.enums import JobType
+        job = self.job_manager.get_job_or_404(db, job_id)
+        effective_job_id = job_id
+        if job.job_type == JobType.CODE_CONVERSION and job.parent_job_id:
+            effective_job_id = job.parent_job_id
+
         version = db.query(YAMLVersion).filter(
-            YAMLVersion.job_id == job_id,
+            YAMLVersion.job_id == effective_job_id,
             YAMLVersion.version_number == version_number
         ).first()
-        
+
         if not version:
             raise HTTPException(
                 status_code=404,
-                detail=f"YAML version {version_number} not found for job {job_id}"
+                detail=f"YAML version {version_number} not found for job {effective_job_id}"
             )
-        
+
         return version
     
     def get_latest_yaml_version(
@@ -297,30 +309,44 @@ class YAMLService:
     ) -> Optional[YAMLVersion]:
         """
         Get the latest YAML version for a job.
-        
+
+        For CODE_CONVERSION jobs (Job 2) which have no YAML of their own, this
+        transparently falls back to the parent job's latest approved YAML version,
+        since the code generation is always driven by the parent's YAML.
+
         Args:
             db: Database session
             job_id: Migration job ID
             only_valid: Only return valid YAML versions
-            
+
         Returns:
             Latest YAMLVersion or None
         """
-        # Verify job exists
-        self.job_manager.get_job_or_404(db, job_id)
-        
-        query = db.query(YAMLVersion).filter(YAMLVersion.job_id == job_id)
-        
+        # Verify job exists — re-use the returned object to inspect job_type/parent
+        job = self.job_manager.get_job_or_404(db, job_id)
+
+        # For CODE_CONVERSION jobs, their YAML lives on the parent Job 1.
+        # Transparently redirect to parent when no direct YAML rows exist.
+        effective_job_id = job_id
+        from app.core.enums import JobType
+        if job.job_type == JobType.CODE_CONVERSION and job.parent_job_id:
+            effective_job_id = job.parent_job_id
+            logger.info(
+                f"Job {job_id} is CODE_CONVERSION — looking up YAML from parent job {effective_job_id}"
+            )
+
+        query = db.query(YAMLVersion).filter(YAMLVersion.job_id == effective_job_id)
+
         if only_valid:
             query = query.filter(YAMLVersion.is_valid == True)
-        
+
         version = query.order_by(YAMLVersion.version_number.desc()).first()
-        
+
         if version:
-            logger.info(f"Retrieved latest YAML version {version.version_number} for job {job_id}")
+            logger.info(f"Retrieved latest YAML version {version.version_number} for job {effective_job_id}")
         else:
-            logger.info(f"No YAML versions found for job {job_id}")
-        
+            logger.info(f"No YAML versions found for job {effective_job_id}")
+
         return version
     
     def approve_yaml_version(
@@ -364,7 +390,7 @@ class YAMLService:
         # Update version
         version.is_approved = True
         version.approved_by = approved_by
-        version.approved_at = datetime.utcnow()
+        version.approved_at = datetime.now()
         # Store approval comments in reviewer_comments_context (no dedicated column)
         if comments:
             version.reviewer_comments_context = comments
@@ -380,6 +406,51 @@ class YAMLService:
         db.commit()
         db.refresh(version)
         
+        # ── Walk the job state machine to YAML_APPROVED_QUEUED ────────────────
+        # The Jobs-page "Approve" endpoint bypasses the review flow, so we must
+        # drive the transitions ourselves (mirroring what review_service does).
+        # Each transition is wrapped in try-except so that if the job is already
+        # in a later state (e.g. CODE_UNDER_REVIEW), the YAML version is still
+        # marked approved without breaking anything.
+        job = db.query(MigrationJob).filter(MigrationJob.id == job_id).first()
+        if job:
+            current = job.current_state
+
+            # Bring the job to UNDER_REVIEW if it hasn't been yet
+            if current == JobState.YAML_GENERATED:
+                try:
+                    JobManager.transition_state(
+                        db=db, job_id=job_id,
+                        new_state=JobState.UNDER_REVIEW, performed_by=approved_by
+                    )
+                    current = JobState.UNDER_REVIEW
+                except Exception:
+                    pass
+
+            # Transition from UNDER_REVIEW (or any state that allows APPROVED)
+            if current in (JobState.UNDER_REVIEW,):
+                try:
+                    JobManager.transition_state(
+                        db=db, job_id=job_id,
+                        new_state=JobState.APPROVED, performed_by=approved_by
+                    )
+                    current = JobState.APPROVED
+                except Exception:
+                    pass
+
+            # Transition to YAML_APPROVED_QUEUED from APPROVED or APPROVED_WITH_COMMENTS
+            if current in (JobState.APPROVED, JobState.APPROVED_WITH_COMMENTS):
+                try:
+                    JobManager.transition_state(
+                        db=db, job_id=job_id,
+                        new_state=JobState.YAML_APPROVED_QUEUED, performed_by=approved_by
+                    )
+                    AuditService.log_job_queued(
+                        db=db, job_id=job_id, queued_by=approved_by
+                    )
+                except Exception:
+                    pass
+
         logger.info(f"YAML version {version_number} approved for job {job_id} by {approved_by}")
         
         return version

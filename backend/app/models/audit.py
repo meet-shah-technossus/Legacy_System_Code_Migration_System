@@ -39,7 +39,7 @@ class AuditLog(Base):
     metadata_json = Column(Text, nullable=True)  # Additional context as JSON
     
     # Timestamps
-    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    timestamp = Column(DateTime, default=datetime.now, nullable=False, index=True)
     
     # Relationship
     job = relationship("MigrationJob", back_populates="audit_logs")

@@ -401,7 +401,7 @@ class AuditService:
             new_state=new_state,
             performed_by=performed_by,
             metadata_json=json.dumps(metadata) if metadata else None,
-            timestamp=datetime.utcnow()
+            timestamp=datetime.now()
         )
         
         db.add(audit_log)

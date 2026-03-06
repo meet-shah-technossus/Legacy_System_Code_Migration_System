@@ -174,7 +174,7 @@ class MetricsService:
             unit=unit,
             job_id=job_id,
             tags=json.dumps(tags) if tags else None,
-            timestamp=datetime.utcnow()
+            timestamp=datetime.now()
         )
         
         db.add(metric)
@@ -317,7 +317,7 @@ class MetricsService:
         Returns:
             Dict with various metrics summaries
         """
-        start_time = datetime.utcnow() - timedelta(hours=hours)
+        start_time = datetime.now() - timedelta(hours=hours)
         
         return {
             "time_range_hours": hours,

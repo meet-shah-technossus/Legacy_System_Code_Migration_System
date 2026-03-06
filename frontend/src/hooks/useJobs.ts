@@ -111,6 +111,9 @@ export function useTransitionJob(jobId: number) {
       qc.invalidateQueries({ queryKey: JOB_KEYS.transitions(jobId) });
       qc.invalidateQueries({ queryKey: JOB_KEYS.lists() });
       qc.invalidateQueries({ queryKey: JOB_KEYS.statistics() });
+      // Invalidate code queries so GeneratedCodePanel sees updated is_accepted flag
+      // (CODE_KEYS.all(jobId) = ['code', jobId] — inlined to avoid circular import)
+      qc.invalidateQueries({ queryKey: ['code', jobId] });
       toast.success(`State → ${updated.current_state}`);
     },
     onError: (err) => {

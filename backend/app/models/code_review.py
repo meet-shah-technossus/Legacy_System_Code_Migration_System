@@ -49,7 +49,7 @@ class CodeReview(Base):
     triggered_regeneration = Column(Boolean, default=False, nullable=False)
 
     # Timestamps
-    reviewed_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    reviewed_at = Column(DateTime, default=datetime.now, nullable=False)
 
     # Relationships
     job = relationship("MigrationJob", back_populates="code_reviews")

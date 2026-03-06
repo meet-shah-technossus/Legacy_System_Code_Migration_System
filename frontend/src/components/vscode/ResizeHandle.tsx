@@ -18,11 +18,16 @@ export default function ResizeHandle({ direction, onResize }: ResizeHandleProps)
 
   const handleMouseDown = (e: React.MouseEvent) => {
     e.preventDefault();
-    const startPos = isCol ? e.clientX : e.clientY;
+    // Track the *last* pointer position so we emit incremental deltas each
+    // mousemove frame rather than the cumulative offset from drag-start.
+    let prevPos = isCol ? e.clientX : e.clientY;
 
     const onMove = (ev: MouseEvent) => {
-      const delta = (isCol ? ev.clientX : ev.clientY) - startPos;
-      onResize(delta);
+      ev.preventDefault();
+      const cur = isCol ? ev.clientX : ev.clientY;
+      const delta = cur - prevPos;
+      prevPos = cur;
+      if (delta !== 0) onResize(delta);
     };
 
     const onUp = () => {

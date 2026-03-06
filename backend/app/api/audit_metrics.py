@@ -176,7 +176,7 @@ def get_success_rate(
     Calculates success rate based on success and failure counts.
     Supported operations: yaml_generation, code_generation.
     """
-    start_time = datetime.utcnow()
+    start_time = datetime.now()
     if hours:
         from datetime import timedelta
         start_time = start_time - timedelta(hours=hours)
@@ -209,7 +209,7 @@ def get_performance_stats(
     Returns min, max, avg, and count for operation duration.
     Supported operations: yaml_generation, code_generation, review.
     """
-    start_time = datetime.utcnow()
+    start_time = datetime.now()
     if hours:
         from datetime import timedelta
         start_time = start_time - timedelta(hours=hours)
@@ -238,7 +238,7 @@ def health_check(db: Session = Depends(get_db)):
     from datetime import timedelta
     
     # Get metrics for last 1 hour
-    one_hour_ago = datetime.utcnow() - timedelta(hours=1)
+    one_hour_ago = datetime.now() - timedelta(hours=1)
     
     recent_errors = MetricsService.get_metric_aggregate(
         db, MetricsService.ERROR_COUNT, "count", one_hour_ago
@@ -250,7 +250,7 @@ def health_check(db: Session = Depends(get_db)):
     
     return {
         "status": "healthy",
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now().isoformat(),
         "metrics": {
             "recent_errors_1h": int(recent_errors),
             "recent_jobs_1h": int(recent_jobs)

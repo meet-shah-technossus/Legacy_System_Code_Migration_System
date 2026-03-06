@@ -98,7 +98,7 @@ def calculate_time_ago(dt: datetime) -> str:
     Returns:
         Human-readable string (e.g., "2 hours ago", "3 days ago")
     """
-    now = datetime.utcnow()
+    now = datetime.now()
     diff = now - dt
     
     if diff < timedelta(minutes=1):
@@ -203,7 +203,7 @@ def is_recent(dt: datetime, hours: int = 24) -> bool:
     Returns:
         True if datetime is within the specified hours
     """
-    cutoff = datetime.utcnow() - timedelta(hours=hours)
+    cutoff = datetime.now() - timedelta(hours=hours)
     return dt >= cutoff
 
 

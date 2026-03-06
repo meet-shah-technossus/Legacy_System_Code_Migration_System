@@ -60,4 +60,18 @@ export const codeApi = {
   /** Get all code reviews for a job */
   getReviews: (jobId: number): Promise<CodeReview[]> =>
     api.get<CodeReview[]>(`/jobs/${jobId}/code/reviews`).then((r) => r.data),
+
+  /** Manually edit the generated code content */
+  editCode: (
+    jobId: number,
+    data: { code_content: string; edited_by: string; edit_reason?: string }
+  ): Promise<GeneratedCode> =>
+    api.patch<GeneratedCode>(`/jobs/${jobId}/code`, data).then((r) => r.data),
+
+  /** Create a brand-new code version (never overwrites; auto-increments version_number) */
+  createVersion: (
+    jobId: number,
+    data: { code_content: string; edited_by: string; edit_reason?: string }
+  ): Promise<CodeVersionDetail> =>
+    api.post<CodeVersionDetail>(`/jobs/${jobId}/code/versions`, data).then((r) => r.data),
 };

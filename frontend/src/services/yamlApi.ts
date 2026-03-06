@@ -54,4 +54,23 @@ export const yamlApi = {
   /** Regenerate YAML with review feedback */
   regenerate: (jobId: number, data: YAMLRegenerationRequest): Promise<YAMLVersion> =>
     api.post<YAMLVersion>(`/jobs/${jobId}/yaml/regenerate`, data).then((r) => r.data),
+
+  /** Manually edit a specific YAML version's content */
+  editVersion: (
+    jobId: number,
+    versionNumber: number,
+    data: { yaml_content: string; edited_by: string; edit_reason?: string }
+  ): Promise<YAMLVersion> =>
+    api
+      .patch<YAMLVersion>(`/jobs/${jobId}/yaml/versions/${versionNumber}`, data)
+      .then((r) => r.data),
+
+  /** Create a brand-new YAML version (never overwrites; auto-increments version_number) */
+  createVersion: (
+    jobId: number,
+    data: { yaml_content: string; edited_by: string; edit_reason?: string }
+  ): Promise<YAMLVersion> =>
+    api
+      .post<YAMLVersion>(`/jobs/${jobId}/yaml/versions`, data)
+      .then((r) => r.data),
 };

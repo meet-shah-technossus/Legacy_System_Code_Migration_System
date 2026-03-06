@@ -68,6 +68,7 @@ export function useYAMLStatistics(jobId: number) {
 export function useGenerateYAML(jobId: number) {
   const qc = useQueryClient();
   return useMutation({
+    mutationKey: ['generate-yaml', jobId],
     mutationFn: (data: YAMLGenerationRequest) => yamlApi.generate(jobId, data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: YAML_KEYS.all(jobId) });
@@ -88,7 +89,11 @@ export function useApproveYAML(jobId: number, versionNumber: number) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: YAML_KEYS.all(jobId) });
       qc.invalidateQueries({ queryKey: JOB_KEYS.detail(jobId) });
-      toast.success('YAML version approved');
+      // Invalidate the jobs list and queue so the Studio Explorer and Queue panel
+      // immediately see the job move to YAML_APPROVED_QUEUED state.
+      qc.invalidateQueries({ queryKey: JOB_KEYS.lists() });
+      qc.invalidateQueries({ queryKey: JOB_KEYS.queue() });
+      toast.success('YAML version approved — job queued for code generation');
     },
     onError: (err) => {
       toast.error(getErrorMessage(err));
@@ -100,11 +105,54 @@ export function useApproveYAML(jobId: number, versionNumber: number) {
 export function useRegenerateYAML(jobId: number) {
   const qc = useQueryClient();
   return useMutation({
+    mutationKey: ['generate-yaml', jobId],
     mutationFn: (data: YAMLRegenerationRequest) => yamlApi.regenerate(jobId, data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: YAML_KEYS.all(jobId) });
       qc.invalidateQueries({ queryKey: JOB_KEYS.detail(jobId) });
       toast.success('YAML regenerated with feedback');
+    },
+    onError: (err) => {
+      toast.error(getErrorMessage(err));
+    },
+  });
+}
+
+/** Manually edit a YAML version's content */
+export function useEditYAMLVersion(jobId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      versionNumber,
+      data,
+    }: {
+      versionNumber: number;
+      data: { yaml_content: string; edited_by: string; edit_reason?: string };
+    }) => yamlApi.editVersion(jobId, versionNumber, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: YAML_KEYS.all(jobId) });
+      qc.invalidateQueries({ queryKey: JOB_KEYS.detail(jobId) });
+      toast.success('YAML saved — approval reset, please re-review');
+    },
+    onError: (err) => {
+      toast.error(getErrorMessage(err));
+    },
+  });
+}
+
+/**
+ * Create a brand-new YAML version (never overwrites an existing version).
+ * The new version_number is auto-incremented by the backend.
+ */
+export function useCreateYAMLVersion(jobId: number) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { yaml_content: string; edited_by: string; edit_reason?: string }) =>
+      yamlApi.createVersion(jobId, data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: YAML_KEYS.all(jobId) });
+      qc.invalidateQueries({ queryKey: JOB_KEYS.detail(jobId) });
+      toast.success('New YAML version saved — approval required');
     },
     onError: (err) => {
       toast.error(getErrorMessage(err));

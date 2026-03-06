@@ -42,7 +42,7 @@ class CodeGenerationResult:
         self.generated_code = generated_code
         self.error_message = error_message
         self.llm_metadata = llm_metadata or {}
-        self.timestamp = datetime.utcnow()
+        self.timestamp = datetime.now()
 
 
 class CodeGenerationService:
@@ -115,7 +115,7 @@ class CodeGenerationService:
         logger.info(f"Starting code generation for job {job_id}, target: {target_language}")
 
         # Generate code (track timing)
-        start_time = datetime.utcnow()
+        start_time = datetime.now()
         if use_llm:
             result = self._generate_with_llm(
                 yaml_content=yaml_version.yaml_content,
@@ -126,7 +126,7 @@ class CodeGenerationService:
                 yaml_content=yaml_version.yaml_content,
                 target_language=target_language
             )
-        generation_time = (datetime.utcnow() - start_time).total_seconds()
+        generation_time = (datetime.now() - start_time).total_seconds()
 
         if not result.success:
             # Record failure metrics
@@ -177,7 +177,7 @@ class CodeGenerationService:
             llm_model_used=result.llm_metadata.get("model"),
             llm_tokens_used=result.llm_metadata.get("tokens_used"),
             estimated_lines_of_code=len(result.generated_code.split("\n")),
-            generated_at=datetime.utcnow(),
+            generated_at=datetime.now(),
             # Phase 1 (Structured Output) metadata
             sections_covered=json.dumps(result.llm_metadata.get("sections_covered") or []),
             external_stubs_included=json.dumps(result.llm_metadata.get("external_stubs_included") or []),

@@ -43,7 +43,7 @@ class LineComment(Base):
     review_round = Column(Integer, default=1, nullable=False)
 
     # Timestamp
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=datetime.now, nullable=False)
 
     # Relationship back to job
     job = relationship("MigrationJob", back_populates="line_comments")

@@ -30,7 +30,7 @@ class YAMLGenerationResult:
         self.errors = errors or []
         self.attempt_number = attempt_number
         self.llm_metadata = llm_metadata or {}
-        self.timestamp = datetime.utcnow()
+        self.timestamp = datetime.now()
 
 
 class YAMLGenerator:
