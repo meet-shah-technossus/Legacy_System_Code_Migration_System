@@ -814,3 +814,185 @@ SYNTAX ERROR that must be fixed before it can run.
 Corrected {target_language} code:"""
 
     return prompt
+
+
+# ============================================================================
+# DIRECT CONVERSION PROMPTS (Single-agent: Pick Basic → Target Language)
+# ============================================================================
+
+DIRECT_CONVERSION_SYSTEM_PROMPT = """You are a specialized migration AI that converts Pick Basic (also known as UniVerse BASIC, UniData BASIC, or D3 BASIC) legacy code **directly** into modern {target_language} code in a single step.
+
+Unlike the two-step pipeline, you receive the raw Pick Basic source and produce production-ready {target_language} without any intermediate YAML representation.
+
+**YOUR INPUT:**
+- Raw Pick Basic source code
+
+**YOUR OUTPUT:**
+- Production-ready {target_language} code
+- Clean, readable, well-commented
+- Follows {target_language} best practices and conventions
+- NO markdown code blocks — output raw {target_language} code only
+
+**CRITICAL REQUIREMENTS:**
+1. **Translate everything** — every variable, file operation, subroutine call, business rule, and control structure
+2. **Preserve exact semantics** — the generated code must behave identically to the Pick Basic original
+3. **Use idiomatic {target_language}** — follow language conventions for naming, structure, and patterns
+4. **Add helpful comments** — explain complex legacy logic, business rules, and non-obvious conversions
+5. **Output ONLY code** — no explanations, no markdown fences, just raw {target_language} code
+6. **Handle errors gracefully** — add proper error handling where legacy code uses STOP/ABORT
+7. **Keep it maintainable** — prefer clear, well-structured code over clever tricks
+
+**PICK BASIC TRANSLATION RULES:**
+- Variables (UPPERCASE.WITH.DOTS) → {target_language} naming convention (e.g. snake_case for Python)
+- Control flow (IF/ELSE/END/LOOP/REPEAT/FOR/NEXT) → equivalent {target_language} constructs
+- File I/O (OPEN/READ/WRITE/DELETE/READU/WRITEV/SELECT/READNEXT) → Repository pattern:
+  - Generate a Model class (dataclass/interface/record) per file entity
+  - Generate a Repository class per file handle with read/write/delete/select methods
+- Subroutines (CALL / GOSUB) → named functions with proper signatures
+  - Pass-by-reference params → tuple return in Python; ref/out in C#; objects in JS/TS
+- Multi-value fields (@VM/@SM/@TM) → lists/arrays with documented delimiters
+- STOP/ABORT/PAUSE → raise exceptions or exit codes
+- Equivalence tables → lookup dictionaries or switch statements
+- COMMON blocks → module-level or class-level shared state
+
+**CODE QUALITY:**
+- Docstrings on every function/class
+- Type hints / type annotations where the language supports them
+- Business logic preserved with inline comments referencing original Pick Basic constructs
+- Entry point clearly defined (main() / Main() / static void main etc.)"""
+
+
+def build_direct_conversion_prompt(
+    source_code: str,
+    target_language: str = "Python",
+) -> str:
+    """
+    Build the prompt for a direct Pick Basic → target language conversion
+    (single LLM call; no YAML intermediate step).
+
+    Args:
+        source_code: Raw Pick Basic source code
+        target_language: Target programming language (e.g. "Python", "TypeScript")
+
+    Returns:
+        Complete prompt string ready for the LLM.
+    """
+    lang = target_language.upper()
+    system_prompt = DIRECT_CONVERSION_SYSTEM_PROMPT.format(target_language=target_language)
+    lang_directives = _LANGUAGE_DIRECTIVES.get(lang, _DEFAULT_LANGUAGE_DIRECTIVES)
+    envelope_instruction = _envelope_instruction(target_language)
+
+    prompt = f"""{system_prompt}
+
+---
+
+{lang_directives}
+
+---
+
+**PICK BASIC SOURCE CODE TO CONVERT:**
+
+```pick
+{source_code}
+```
+
+**TARGET LANGUAGE:** {target_language}
+
+**FINAL INSTRUCTION:**
+Translate the Pick Basic source code above into {target_language}.
+Follow the language directives exactly.
+Produce complete, runnable code — do not leave any logic as a placeholder or TODO.
+
+{envelope_instruction}"""
+
+    return prompt
+
+
+def build_direct_conversion_regeneration_prompt(
+    source_code: str,
+    target_language: str = "Python",
+    general_feedback: str = "",
+    line_comment_context: str = "",
+    previous_code: str = "",
+    regeneration_count: int = 1,
+) -> str:
+    """
+    Build a regeneration prompt for a direct conversion job after a reviewer rejection.
+
+    Args:
+        source_code: The original Pick Basic source code
+        target_language: Target programming language
+        general_feedback: Cumulative reviewer comments (all rounds)
+        line_comment_context: Formatted inline line-level reviewer comments
+        previous_code: Previously generated code (for reference)
+        regeneration_count: How many times this job has been regenerated
+
+    Returns:
+        Complete regeneration prompt string for the LLM.
+    """
+    lang = target_language.upper()
+    system_prompt = DIRECT_CONVERSION_SYSTEM_PROMPT.format(target_language=target_language)
+    lang_directives = _LANGUAGE_DIRECTIVES.get(lang, _DEFAULT_LANGUAGE_DIRECTIVES)
+    envelope_instruction = _envelope_instruction(target_language)
+
+    previous_code_section = ""
+    if previous_code:
+        lines = previous_code.split("\n")
+        max_lines = 150
+        snippet = "\n".join(lines[:max_lines])
+        truncation_note = (
+            f"\n... [{len(lines) - max_lines} lines truncated]"
+            if len(lines) > max_lines
+            else ""
+        )
+        previous_code_section = f"""
+**PREVIOUS GENERATED CODE (reference only — do NOT copy its errors):**
+```{target_language.lower()}
+{snippet}{truncation_note}
+```
+"""
+
+    feedback_section = ""
+    if general_feedback:
+        feedback_section = f"""
+**REVIEWER GENERAL FEEDBACK (ALL ROUNDS — address every point):**
+{general_feedback}
+"""
+
+    line_comments_section = ""
+    if line_comment_context:
+        line_comments_section = f"""
+**INLINE LINE COMMENTS FROM REVIEWER:**
+{line_comment_context}
+"""
+
+    prompt = f"""{system_prompt}
+
+---
+
+**DIRECT CONVERSION REGENERATION ATTEMPT #{regeneration_count}**
+
+The reviewer has rejected the previous code. You MUST fix ALL identified issues.
+{previous_code_section}{feedback_section}{line_comments_section}
+{lang_directives}
+
+---
+
+**ORIGINAL PICK BASIC SOURCE CODE:**
+
+```pick
+{source_code}
+```
+
+**TARGET LANGUAGE:** {target_language}
+
+**CRITICAL INSTRUCTIONS:**
+1. Fix every point in the REVIEWER GENERAL FEEDBACK
+2. Fix every inline line comment — if a specific line is flagged, fix exactly that line
+3. Do NOT repeat mistakes from the previous attempt
+4. Produce complete, runnable code — no TODOs or placeholders
+
+{envelope_instruction}"""
+
+    return prompt
+

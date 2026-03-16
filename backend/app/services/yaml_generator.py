@@ -1,7 +1,7 @@
 """YAML generator service using LLM for Pick Basic code analysis."""
 
-from typing import Tuple, Optional, Dict, Any
-from app.llm.openai_client import get_openai_client
+from typing import Tuple, Optional, Dict, Any, Union
+from app.llm.openai_client import get_openai_client, OpenAIClient
 from app.llm.prompts import build_yaml_generation_prompt, build_yaml_regeneration_prompt
 from app.services.yaml_validator import YAMLValidator
 from app.schemas.yaml_schema import PickBasicYAMLSchema
@@ -36,9 +36,16 @@ class YAMLGenerationResult:
 class YAMLGenerator:
     """Generator for creating YAML representations from Pick Basic code."""
     
-    def __init__(self):
-        """Initialize the YAML generator with LLM client."""
-        self.llm_client = get_openai_client()
+    def __init__(self, llm_client=None):
+        """Initialize the YAML generator with an optional LLM client.
+
+        Args:
+            llm_client: Any LLM client that implements the OpenAIClient interface
+                        (generate_content / generate_with_retry).  When *None*
+                        (the default) the OpenAI client from settings is used,
+                        preserving backwards compatibility.
+        """
+        self.llm_client = llm_client if llm_client is not None else get_openai_client()
         self.validator = YAMLValidator()
         self.max_retries = settings.MAX_YAML_RETRY_ATTEMPTS
     
@@ -70,11 +77,13 @@ class YAMLGenerator:
         
         # Generate with LLM
         try:
-            raw_yaml = self.llm_client.generate_with_retry(
+            response = self.llm_client.generate_with_retry(
                 prompt=prompt,
                 max_retries=3,
                 temperature=0.2
             )
+            # Both OpenAI and Anthropic clients return {"text": ...}
+            raw_yaml: str = response.get("text", "") if isinstance(response, dict) else str(response)
             
             logger.info(f"LLM generated {len(raw_yaml)} characters of YAML")
             
@@ -217,11 +226,12 @@ class YAMLGenerator:
         
         try:
             # Generate with LLM
-            raw_yaml = self.llm_client.generate_with_retry(
+            response = self.llm_client.generate_with_retry(
                 prompt=prompt,
                 max_retries=2,
                 temperature=0.3  # Slightly higher temperature for regeneration
             )
+            raw_yaml: str = response.get("text", "") if isinstance(response, dict) else str(response)
             
             logger.info(f"LLM regenerated {len(raw_yaml)} characters of YAML")
             

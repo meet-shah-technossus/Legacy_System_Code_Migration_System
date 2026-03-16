@@ -8,8 +8,9 @@ import json
 
 from app.models.job import MigrationJob
 from app.models.yaml_version import YAMLVersion
-from app.core.enums import JobState
+from app.core.enums import JobState, LLMProvider
 from app.services.yaml_generator import YAMLGenerator, YAMLGenerationResult
+from app.llm.llm_router import get_llm_client
 from app.services.audit_service import AuditService
 from app.services.metrics_service import MetricsService
 from app.services.job_manager import JobManager
@@ -22,7 +23,6 @@ class YAMLService:
     """Service for managing YAML generation and versioning."""
     
     def __init__(self):
-        self.generator = YAMLGenerator()
         self.job_manager = JobManager()
     
     def generate_yaml_for_job(
@@ -31,7 +31,8 @@ class YAMLService:
         job_id: int,
         performed_by: str,
         force_regenerate: bool = False,
-        review_feedback_context: Optional[Dict[str, Any]] = None
+        review_feedback_context: Optional[Dict[str, Any]] = None,
+        llm_provider: LLMProvider = LLMProvider.OPENAI
     ) -> YAMLVersion:
         """
         Generate YAML for a migration job and store it in the database.
@@ -107,7 +108,8 @@ class YAMLService:
 
         # Track timing
         start_time = datetime.now()
-        result: YAMLGenerationResult = self.generator.generate_yaml_with_auto_retry(
+        generator = YAMLGenerator(llm_client=get_llm_client(llm_provider))
+        result: YAMLGenerationResult = generator.generate_yaml_with_auto_retry(
             pick_basic_code=job.original_source_code,
             original_filename=job.source_filename or "unknown.bp",
             additional_context=additional_context
@@ -139,7 +141,11 @@ class YAMLService:
             regeneration_reason=performed_by,
             parent_version_id=parent_version_id
         )
-        
+
+        # Persist which LLM provider was used for this YAML generation step
+        job.yaml_llm_provider = llm_provider.value
+        job.yaml_llm_model = result.llm_metadata.get("model")
+
         db.add(yaml_version)
         
         # Update job state if generation was successful
@@ -499,7 +505,8 @@ class YAMLService:
         job_id: int,
         performed_by: str,
         include_previous_comments: bool = True,
-        additional_instructions: Optional[str] = None
+        additional_instructions: Optional[str] = None,
+        llm_provider: Optional[LLMProvider] = None,
     ) -> YAMLVersion:
         """
         Regenerate YAML incorporating feedback from previous review.
@@ -510,6 +517,8 @@ class YAMLService:
             performed_by: User/system performing the action
             include_previous_comments: Include comments from last review
             additional_instructions: Additional guidance for regeneration
+            llm_provider: LLM provider override. If None, falls back to the
+                          provider that was used for the original YAML generation.
             
         Returns:
             New YAMLVersion object
@@ -541,11 +550,24 @@ class YAMLService:
         
         logger.info(f"Regenerating YAML for job {job_id} with review feedback")
         
+        # Determine the provider for regeneration.
+        # If the caller explicitly specified one, honour it;
+        # otherwise re-use the provider from the original YAML generation.
+        if llm_provider is not None:
+            regen_provider = llm_provider
+        else:
+            stored_provider = getattr(job, "yaml_llm_provider", None)
+            try:
+                regen_provider = LLMProvider(stored_provider.upper()) if stored_provider else LLMProvider.OPENAI
+            except (ValueError, AttributeError):
+                regen_provider = LLMProvider.OPENAI
+        
         # Generate new YAML version with feedback context
         return self.generate_yaml_for_job(
             db=db,
             job_id=job_id,
             performed_by=performed_by,
             force_regenerate=False,
-            review_feedback_context=feedback_context
+            review_feedback_context=feedback_context,
+            llm_provider=regen_provider
         )

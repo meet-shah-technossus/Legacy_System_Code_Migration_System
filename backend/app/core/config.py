@@ -11,8 +11,9 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
     
     # Application
-    APP_NAME: str = "Legacy Code Migration Backend"
-    APP_VERSION: str = "0.1.0"
+    APP_NAME: str = "Legacy Code Migration System"
+    APP_VERSION: str = "1.0.0.0"
+    APP_COPYRIGHT: str = "© 2026 Technossus. All rights reserved."
     DEBUG: bool = True
     
     # Server
@@ -28,6 +29,10 @@ class Settings(BaseSettings):
     # LLM Configuration - OpenAI
     OPENAI_API_KEY: str = ""
     OPENAI_MODEL: str = "gpt-4.1"
+
+    # LLM Configuration - Anthropic (used when job/step selects ANTHROPIC provider)
+    ANTHROPIC_API_KEY: str = ""
+    ANTHROPIC_MODEL: str = "claude-opus-4-5"
     
     # LLM Settings
     MAX_YAML_RETRY_ATTEMPTS: int = 3

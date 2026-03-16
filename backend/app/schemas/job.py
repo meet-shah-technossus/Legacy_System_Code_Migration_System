@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime
 
-from app.core.enums import JobState, JobType, TargetLanguage
+from app.core.enums import JobState, JobType, TargetLanguage, LLMProvider
 
 
 # ── Request Schemas ─────────────────────────────────────────────────────────
@@ -21,6 +21,21 @@ class MigrationJobCreate(BaseModel):
     original_source_code: str = Field(..., min_length=1, description="Pick Basic source code")
     source_filename: Optional[str] = Field(None, max_length=255, description="Original filename")
     pick_basic_version: Optional[str] = Field(None, max_length=50, description="Pick Basic version")
+    created_by: Optional[str] = Field(None, max_length=100, description="User identifier")
+    yaml_llm_provider: Optional[LLMProvider] = Field(None, description="Preferred LLM provider for YAML generation")
+
+
+class DirectJobCreate(BaseModel):
+    """Schema for creating a new Direct Conversion job (Pick Basic → Target Language).
+    Unlike Job 1 / Job 2, this job performs the entire migration in a single LLM call.
+    """
+    job_name: Optional[str] = Field(None, max_length=255, description="Optional job name")
+    description: Optional[str] = Field(None, description="Job description")
+    original_source_code: str = Field(..., min_length=1, description="Pick Basic source code")
+    source_filename: Optional[str] = Field(None, max_length=255, description="Original filename")
+    pick_basic_version: Optional[str] = Field(None, max_length=50, description="Pick Basic version")
+    target_language: TargetLanguage = Field(..., description="Target programming language")
+    llm_provider: LLMProvider = Field(LLMProvider.OPENAI, description="LLM provider to use for code generation")
     created_by: Optional[str] = Field(None, max_length=100, description="User identifier")
 
 
@@ -36,9 +51,23 @@ class Job2Create(BaseModel):
 
 
 class MigrationJobUpdate(BaseModel):
-    """Schema for updating job metadata (not state)."""
+    """Schema for updating job metadata (not state).
+
+    LLM provider fields serve as the *preferred default* for the next generation
+    attempt on this job.  Setting them here pre-seeds the provider picker UI so
+    users don't have to choose the provider every time they click Generate.
+    They are also overwritten automatically after each successful generation.
+    """
     job_name: Optional[str] = Field(None, max_length=255)
     description: Optional[str] = None
+    yaml_llm_provider: Optional[LLMProvider] = Field(
+        None,
+        description="Preferred LLM provider for YAML generation steps on this job"
+    )
+    code_llm_provider: Optional[LLMProvider] = Field(
+        None,
+        description="Preferred LLM provider for code generation steps on this job"
+    )
 
 
 class JobStateTransition(BaseModel):
@@ -94,6 +123,12 @@ class MigrationJobResponse(BaseModel):
     # Counts for related entities
     yaml_versions_count: int = 0
     reviews_count: int = 0
+
+    # LLM provider/model tracking
+    yaml_llm_provider: Optional[LLMProvider] = None
+    yaml_llm_model: Optional[str] = None
+    code_llm_provider: Optional[LLMProvider] = None
+    code_llm_model: Optional[str] = None
 
     model_config = {"from_attributes": True}
 

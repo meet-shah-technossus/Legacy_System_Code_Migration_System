@@ -29,10 +29,19 @@ class ChatMessage(BaseModel):
     content: str
 
 
+class LineCommentContext(BaseModel):
+    """A single inline line comment attached by the user to provide code context."""
+    line_number: int
+    text: str           # The user's typed annotation / question about this line
+    code_line: Optional[str] = None  # The actual source code at this line
+    code_type: Optional[str] = None  # 'yaml' or 'generated_code'
+
+
 class ChatRequest(BaseModel):
     messages: List[ChatMessage]
     job_id: Optional[int] = None
     performed_by: str = "user"
+    line_comments: Optional[List[LineCommentContext]] = None
 
 
 class ChatResponse(BaseModel):
@@ -59,6 +68,7 @@ Your expertise includes:
 - When referencing code from the job context, quote the relevant section
 - If you don't know something with certainty, say so clearly
 - Keep responses focused — if a question is broad, ask for clarification
+- **When the user has pinned specific code lines (via inline comments), always answer directly about that code. Never ask "what code are you referring to?" when inline line references have been provided.**
 """
 
 # ─── Endpoint ─────────────────────────────────────────────────────────────────
@@ -95,6 +105,8 @@ def chat(
             job_type_label = (
                 "Job 1 — Pick Basic → YAML"
                 if job.job_type and job.job_type.value == "YAML_CONVERSION"
+                else "Direct Conversion — Pick Basic → Code (no intermediate YAML)"
+                if job.job_type and job.job_type.value == "DIRECT_CONVERSION"
                 else "Job 2 — YAML → Code"
             )
             ctx_lines: List[str] = [
@@ -130,6 +142,29 @@ def chat(
                 logger.debug(f"Could not fetch YAML for chat context: {yaml_err}")
 
             system_content += "\n".join(ctx_lines)
+
+    # ── Inject inline line comment context ────────────────────────────────────
+    # These are the chips the user attached in the editor before asking their
+    # question. Each entry includes both the actual code line and the user's
+    # annotation so the LLM has full context to answer without guessing.
+    if request.line_comments:
+        lc_lines: List[str] = [
+            "\n\n---\n## Code Lines Referenced by the User",
+            "The user pinned the following lines from the code editor. "
+            "Their question refers specifically to this code:",
+        ]
+        for lc in request.line_comments:
+            artifact = f" ({lc.code_type})" if lc.code_type else ""
+            lc_lines.append(f"\n### Line {lc.line_number}{artifact}")
+            if lc.code_line:
+                lc_lines.append(f"```\n{lc.code_line}\n```")
+            lc_lines.append(f"**User's annotation:** {lc.text}")
+        lc_lines.append(
+            "\nAnswer the user's question **using the code shown above** as the "
+            "primary reference. Do not ask for clarification about which code they "
+            "mean — it has been provided above."
+        )
+        system_content += "\n".join(lc_lines)
 
     # ── Compose messages list ─────────────────────────────────────────────────
     messages: List[dict] = [{"role": "system", "content": system_content}]

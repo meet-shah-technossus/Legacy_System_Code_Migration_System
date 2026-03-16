@@ -6,8 +6,9 @@ RESTful API for generating modern code from approved YAML.
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from typing import Optional, List
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from datetime import datetime
+import json
 
 from app.core.database import get_db
 from app.core.enums import TargetLanguage, ReviewDecision, JobState
@@ -29,6 +30,7 @@ class CodeGenerationRequest(BaseModel):
     target_language: TargetLanguage = Field(..., description="Target programming language")
     performed_by: str = Field(..., min_length=1, max_length=255, description="User/system performing the action")
     use_llm: bool = Field(default=True, description="Use LLM (True) or pure mapper (False)")
+    llm_provider: str = Field(default='OPENAI', description="LLM provider to use: OPENAI or ANTHROPIC")
 
 
 class GeneratedCodeResponse(BaseModel):
@@ -41,8 +43,26 @@ class GeneratedCodeResponse(BaseModel):
     llm_model_used: Optional[str]
     estimated_lines_of_code: Optional[int]
     generated_at: datetime
-    
+    # Phase 2 — syntax validation results (one-shot auto-fix already ran at generation time)
+    validation_tool_available: Optional[bool] = None
+    validation_errors: Optional[List[str]] = None
+    # Acceptance / version tracking
+    is_accepted: bool = False
+    version_number: Optional[int] = None
+    is_current: Optional[bool] = None
+
     model_config = {"from_attributes": True}
+
+    @field_validator("validation_errors", mode="before")
+    @classmethod
+    def _parse_validation_errors(cls, v):
+        """Deserialise the JSON string stored in the Text column to a Python list."""
+        if isinstance(v, str):
+            try:
+                return json.loads(v)
+            except (json.JSONDecodeError, ValueError):
+                return None
+        return v
 
 
 class GeneratedCodeSummary(BaseModel):
@@ -84,7 +104,8 @@ def generate_code(
         job_id=job_id,
         target_language=request.target_language.value,
         performed_by=request.performed_by,
-        use_llm=request.use_llm
+        use_llm=request.use_llm,
+        llm_provider=request.llm_provider
     )
     
     return GeneratedCodeResponse.model_validate(generated_code)
@@ -627,3 +648,212 @@ def create_code_version(
     db.commit()
     db.refresh(new_code)
     return _detail_from_orm(new_code)
+
+
+# ============================================================================
+# DIRECT CONVERSION endpoints  (DIRECT_CONVERSION job type)
+# Pick Basic → Target Language in a single LLM call — no YAML intermediate.
+# ============================================================================
+
+from app.services.direct_conversion_service import DirectConversionService
+from app.core.enums import LLMProvider as _LLMProvider
+
+_direct_service = DirectConversionService()
+
+
+class DirectCodeGenerationRequest(BaseModel):
+    """Request to trigger the first (initial) direct conversion for a job."""
+    target_language: TargetLanguage = Field(..., description="Target programming language")
+    performed_by: str = Field(..., min_length=1, max_length=255)
+    llm_provider: _LLMProvider = Field(_LLMProvider.OPENAI, description="LLM provider to use")
+    llm_model_override: Optional[str] = Field(
+        None,
+        description="Optional model name override (e.g. 'gpt-4o', 'claude-opus-4-5')"
+    )
+
+
+class DirectCodeRegenerationRequest(BaseModel):
+    """Request to regenerate code after a reviewer rejection on a direct conversion job."""
+    target_language: TargetLanguage = Field(..., description="Target programming language")
+    performed_by: str = Field(..., min_length=1, max_length=255)
+    general_feedback: str = Field("", description="Cumulative reviewer comments")
+    line_comment_context: str = Field("", description="Formatted inline line comments from reviewer")
+    llm_provider: _LLMProvider = Field(_LLMProvider.OPENAI, description="LLM provider to use")
+    llm_model_override: Optional[str] = Field(None, description="Optional model name override")
+
+
+class DirectCodeReviewRequest(BaseModel):
+    """Request to submit a review (accept / reject-and-regenerate) on a direct conversion job."""
+    decision: ReviewDecision = Field(
+        ...,
+        description="DIRECT_APPROVE to accept, DIRECT_REJECT_REGENERATE to reject and request regeneration"
+    )
+    general_feedback: Optional[str] = Field(None, description="Optional review notes")
+    reviewed_by: Optional[str] = Field(None, max_length=255)
+    version_number: Optional[int] = Field(
+        None,
+        description="Specific version to accept. If omitted the current version is used."
+    )
+
+
+@router.post(
+    "/{job_id}/direct/generate",
+    response_model=GeneratedCodeResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Generate code via direct conversion",
+    description=(
+        "Trigger Pick Basic → target language conversion for a DIRECT_CONVERSION job "
+        "using a single LLM call (no YAML intermediate step). "
+        "Job must be in CREATED or DIRECT_CODE_REGENERATE_REQUESTED state."
+    ),
+)
+def direct_generate_code(
+    job_id: int,
+    request: DirectCodeGenerationRequest,
+    db: Session = Depends(get_db),
+):
+    """Generate code for a DIRECT_CONVERSION job."""
+    generated = _direct_service.generate_code_for_job(
+        db=db,
+        job_id=job_id,
+        target_language=request.target_language.value,
+        performed_by=request.performed_by,
+        llm_provider=request.llm_provider,
+        llm_model_override=request.llm_model_override,
+    )
+    return GeneratedCodeResponse.model_validate(generated)
+
+
+@router.post(
+    "/{job_id}/direct/regenerate",
+    response_model=GeneratedCodeResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Regenerate code after reviewer rejection (direct conversion)",
+    description=(
+        "Regenerate code for a DIRECT_CONVERSION job after a reviewer rejection. "
+        "Job must be in DIRECT_CODE_REGENERATE_REQUESTED state."
+    ),
+)
+def direct_regenerate_code(
+    job_id: int,
+    request: DirectCodeRegenerationRequest,
+    db: Session = Depends(get_db),
+):
+    """Regenerate code for a DIRECT_CONVERSION job after rejection."""
+    generated = _direct_service.regenerate_code_for_job(
+        db=db,
+        job_id=job_id,
+        target_language=request.target_language.value,
+        performed_by=request.performed_by,
+        general_feedback=request.general_feedback,
+        line_comment_context=request.line_comment_context,
+        llm_provider=request.llm_provider,
+        llm_model_override=request.llm_model_override,
+    )
+    return GeneratedCodeResponse.model_validate(generated)
+
+
+@router.post(
+    "/{job_id}/direct/review",
+    summary="Submit a review for a direct conversion job",
+    description=(
+        "Accept or reject the current code version for a DIRECT_CONVERSION job. "
+        "DIRECT_APPROVE transitions to DIRECT_CODE_ACCEPTED → DIRECT_COMPLETED. "
+        "DIRECT_REJECT_REGENERATE transitions to DIRECT_CODE_REGENERATE_REQUESTED."
+    ),
+)
+def direct_submit_review(
+    job_id: int,
+    request: DirectCodeReviewRequest,
+    db: Session = Depends(get_db),
+):
+    """Submit accept/reject review for a DIRECT_CONVERSION job."""
+    from app.services.job_manager import JobManager as _JM
+    from app.core.enums import ReviewDecision as _RD, AuditAction as _AA
+    from app.services.audit_service import AuditService as _AS
+    from app.models.code import GeneratedCode as _GC
+
+    jm = _JM()
+    job = jm.get_job_or_404(db, job_id)
+
+    if job.current_state != JobState.DIRECT_CODE_UNDER_REVIEW:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Job {job_id} is not under review (state: {job.current_state.value}). "
+                "Cannot submit a review."
+            ),
+        )
+
+    if request.decision == _RD.DIRECT_APPROVE:
+        # Resolve which version to accept: use the explicitly requested version_number
+        # (i.e. the one the reviewer was looking at) or fall back to is_current.
+        if request.version_number is not None:
+            target_code = (
+                db.query(_GC)
+                .filter(_GC.job_id == job_id, _GC.version_number == request.version_number)
+                .first()
+            )
+            if not target_code:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Version {request.version_number} not found for job {job_id}."
+                )
+        else:
+            target_code = (
+                db.query(_GC)
+                .filter(_GC.job_id == job_id, _GC.is_current.is_(True))
+                .first()
+            )
+
+        if target_code:
+            # Demote all versions from is_current, then promote the accepted one
+            db.query(_GC).filter(_GC.job_id == job_id).update(
+                {"is_current": False}, synchronize_session="fetch"
+            )
+            target_code.is_current = True
+            target_code.is_accepted = True
+
+        jm.transition_state(db, job_id, JobState.DIRECT_CODE_ACCEPTED, request.reviewed_by or "REVIEWER",
+                            "Reviewer accepted direct conversion code")
+        jm.transition_state(db, job_id, JobState.DIRECT_COMPLETED, "SYSTEM",
+                            "Direct conversion job completed")
+
+        _AS._create_log(
+            db=db, job_id=job_id, action=_AA.DIRECT_CODE_ACCEPTED,
+            description="Reviewer accepted direct conversion code",
+            performed_by=request.reviewed_by or "REVIEWER",
+            metadata={"decision": request.decision.value, "feedback": request.general_feedback},
+        )
+        _AS._create_log(
+            db=db, job_id=job_id, action=_AA.DIRECT_JOB_COMPLETED,
+            description="Direct conversion job completed",
+            performed_by="SYSTEM", metadata={},
+        )
+        db.commit()
+        return {"message": "Code accepted. Direct conversion job completed.", "job_id": job_id}
+
+    elif request.decision == _RD.DIRECT_REJECT_REGENERATE:
+        jm.transition_state(db, job_id, JobState.DIRECT_CODE_REGENERATE_REQUESTED,
+                            request.reviewed_by or "REVIEWER",
+                            "Reviewer rejected code — regeneration requested")
+        _AS._create_log(
+            db=db, job_id=job_id, action=_AA.DIRECT_CODE_REVIEW_SUBMITTED,
+            description="Reviewer rejected direct conversion code — regeneration requested",
+            performed_by=request.reviewed_by or "REVIEWER",
+            metadata={"decision": request.decision.value, "feedback": request.general_feedback},
+        )
+        db.commit()
+        return {
+            "message": "Code rejected. Use POST /{job_id}/direct/regenerate to regenerate.",
+            "job_id": job_id,
+        }
+
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=(
+            f"Unsupported decision {request.decision.value!r} for direct conversion review. "
+            "Use DIRECT_APPROVE or DIRECT_REJECT_REGENERATE."
+        ),
+    )
+

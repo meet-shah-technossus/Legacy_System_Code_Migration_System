@@ -45,6 +45,7 @@ from contextlib import asynccontextmanager
 from app.core.config import settings
 from app.core.database import init_db
 from app.api import jobs, yaml, reviews, code_generation, audit_metrics, auth, chat
+from app.api import settings as settings_router
 
 
 @asynccontextmanager
@@ -70,7 +71,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
-    description="Backend service for migrating Pick Basic code to modern languages",
+    description="Backend service for migrating Pick Basic code to modern languages. © 2026 Technossus. All rights reserved.",
     lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc"
@@ -94,6 +95,7 @@ async def root():
         "status": "healthy",
         "app": settings.APP_NAME,
         "version": settings.APP_VERSION,
+        "copyright": settings.APP_COPYRIGHT,
         "message": "Legacy Code Migration Backend is running"
     }
 
@@ -105,6 +107,7 @@ async def health_check():
         "status": "healthy",
         "app": settings.APP_NAME,
         "version": settings.APP_VERSION,
+        "copyright": settings.APP_COPYRIGHT,
         "database": "connected",
         "llm_configured": bool(settings.OPENAI_API_KEY)
     }
@@ -118,6 +121,7 @@ app.include_router(reviews.router, prefix="/api/jobs", tags=["Reviews"])
 app.include_router(code_generation.router, prefix="/api/jobs", tags=["Code Generation"])
 app.include_router(audit_metrics.router, tags=["Audit & Metrics"])
 app.include_router(chat.router, prefix="/api", tags=["Chat"])
+app.include_router(settings_router.router, prefix="/api/settings", tags=["Settings"])
 
 
 if __name__ == "__main__":

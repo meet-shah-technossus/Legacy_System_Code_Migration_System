@@ -14,8 +14,9 @@ import logging
 from app.models.job import MigrationJob
 from app.models.yaml_version import YAMLVersion
 from app.models.code import GeneratedCode
-from app.core.enums import JobState, TargetLanguage, JobType
+from app.core.enums import JobState, TargetLanguage, JobType, LLMProvider
 from app.llm.openai_client import OpenAIClient
+from app.llm.llm_router import get_llm_client
 from app.llm.prompts import build_code_generation_prompt, build_strict_code_generation_prompt, build_syntax_error_fix_prompt
 from app.services.code_output_parser import CodeOutputParser
 from app.services.job_manager import JobManager
@@ -23,7 +24,12 @@ from app.services.audit_service import AuditService
 from app.services.metrics_service import MetricsService
 from app.services.syntax_validator import SyntaxValidator, ValidationResult
 from app.mapping.base_mapper import MappingLoader
-from app.mapping.python_mapper import PythonMapper  # Import to register
+# Import all language mappers to trigger their MappingLoader.register_mapper() calls
+from app.mapping.python_mapper import PythonMapper          # noqa: F401
+from app.mapping.typescript_mapper import TypeScriptMapper  # noqa: F401
+from app.mapping.javascript_mapper import JavaScriptMapper  # noqa: F401
+from app.mapping.java_mapper import JavaMapper              # noqa: F401
+from app.mapping.csharp_mapper import CSharpMapper          # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +58,6 @@ class CodeGenerationService:
     """
 
     def __init__(self):
-        self.llm_client = OpenAIClient()
         self.job_manager = JobManager()
 
     def generate_code_for_job(
@@ -61,7 +66,8 @@ class CodeGenerationService:
         job_id: int,
         target_language: str,
         performed_by: str,
-        use_llm: bool = True
+        use_llm: bool = True,
+        llm_provider: str = 'OPENAI'
     ) -> GeneratedCode:
         """
         Generate modern code from approved YAML.
@@ -114,12 +120,20 @@ class CodeGenerationService:
 
         logger.info(f"Starting code generation for job {job_id}, target: {target_language}")
 
+        # Resolve LLM client for this request
+        try:
+            provider_enum = LLMProvider(llm_provider.upper())
+        except ValueError:
+            provider_enum = LLMProvider.OPENAI
+        llm_client = get_llm_client(provider_enum)
+
         # Generate code (track timing)
         start_time = datetime.now()
         if use_llm:
             result = self._generate_with_llm(
                 yaml_content=yaml_version.yaml_content,
-                target_language=target_language
+                target_language=target_language,
+                llm_client=llm_client
             )
         else:
             result = self._generate_with_mapper(
@@ -168,6 +182,10 @@ class CodeGenerationService:
         ).update({"is_current": False}, synchronize_session="fetch")
 
         # Create GeneratedCode record
+        # Persist which LLM provider was used for code generation
+        job.code_llm_provider = provider_enum.value
+        job.code_llm_model = result.llm_metadata.get("model")
+
         generated_code = GeneratedCode(
             job_id=job_id,
             yaml_version_id=yaml_version.id,
@@ -277,7 +295,8 @@ class CodeGenerationService:
     def _generate_with_llm(
         self,
         yaml_content: str,
-        target_language: str
+        target_language: str,
+        llm_client=None
     ) -> CodeGenerationResult:
         """
         Generate code using LLM.
@@ -297,8 +316,11 @@ class CodeGenerationService:
                 target_language=target_language,
             )
 
+            # Use injected client (falls back to default OpenAI for backwards compat)
+            _client = llm_client if llm_client is not None else OpenAIClient()
+
             # Call LLM
-            response = self.llm_client.generate_content(prompt)
+            response = _client.generate_content(prompt)
 
             if not response or not response.get("text"):
                 return CodeGenerationResult(
@@ -326,7 +348,7 @@ class CodeGenerationService:
                     broken_code=code,
                     syntax_error=val.error_message or "",
                 )
-                retry_response = self.llm_client.generate_content(fix_prompt)
+                retry_response = _client.generate_content(fix_prompt)
                 if retry_response and retry_response.get("text"):
                     retry_parsed = CodeOutputParser.parse(
                         retry_response["text"].strip(), target_language

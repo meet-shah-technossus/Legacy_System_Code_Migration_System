@@ -11,9 +11,11 @@ class JobType(str, Enum):
     Migration job type.
     Job 1: Pick Basic → YAML (Human 1 reviews)
     Job 2: YAML → Target Language (Human 2 reviews)
+    Direct: Pick Basic → Target Language in one shot (comparison mode)
     """
     YAML_CONVERSION = "YAML_CONVERSION"
     CODE_CONVERSION = "CODE_CONVERSION"
+    DIRECT_CONVERSION = "DIRECT_CONVERSION"
 
 
 class JobState(str, Enum):
@@ -35,6 +37,12 @@ class JobState(str, Enum):
     CODE_REGENERATE_REQUESTED = "CODE_REGENERATE_REQUESTED"
     CODE_ACCEPTED = "CODE_ACCEPTED"
     COMPLETED = "COMPLETED"
+    # Direct Conversion states (Pick Basic → Target Language, no YAML step)
+    DIRECT_CODE_GENERATED = "DIRECT_CODE_GENERATED"
+    DIRECT_CODE_UNDER_REVIEW = "DIRECT_CODE_UNDER_REVIEW"
+    DIRECT_CODE_REGENERATE_REQUESTED = "DIRECT_CODE_REGENERATE_REQUESTED"
+    DIRECT_CODE_ACCEPTED = "DIRECT_CODE_ACCEPTED"
+    DIRECT_COMPLETED = "DIRECT_COMPLETED"
 
 
 class ReviewDecision(str, Enum):
@@ -43,9 +51,12 @@ class ReviewDecision(str, Enum):
     REJECT_REGENERATE = "REJECT_REGENERATE"
     APPROVE = "APPROVE"
     APPROVE_WITH_COMMENTS = "APPROVE_WITH_COMMENTS"
-    # Code review decisions
+    # Code review decisions (Job 2)
     CODE_APPROVE = "CODE_APPROVE"
     CODE_REJECT_REGENERATE = "CODE_REJECT_REGENERATE"
+    # Direct conversion review decisions
+    DIRECT_APPROVE = "DIRECT_APPROVE"
+    DIRECT_REJECT_REGENERATE = "DIRECT_REJECT_REGENERATE"
 
 
 class TargetLanguage(str, Enum):
@@ -55,6 +66,17 @@ class TargetLanguage(str, Enum):
     JAVASCRIPT = "JAVASCRIPT"
     JAVA = "JAVA"
     CSHARP = "CSHARP"
+
+
+class LLMProvider(str, Enum):
+    """
+    LLM provider selection.
+    Stored on each job/code record so users can see which model produced each result.
+    OPENAI  → OpenAI (gpt-4.1 by default)
+    ANTHROPIC → Anthropic Claude (claude-opus-4-6 by default)
+    """
+    OPENAI = "OPENAI"
+    ANTHROPIC = "ANTHROPIC"
 
 
 class YAMLSectionType(str, Enum):
@@ -99,6 +121,14 @@ class AuditAction(str, Enum):
     CODE_REVIEW_SUBMITTED = "CODE_REVIEW_SUBMITTED"
     CODE_REGENERATION_REQUESTED = "CODE_REGENERATION_REQUESTED"
     CODE_ACCEPTED = "CODE_ACCEPTED"
+
+    # Direct conversion
+    DIRECT_CODE_GENERATED = "DIRECT_CODE_GENERATED"
+    DIRECT_CODE_GENERATION_FAILED = "DIRECT_CODE_GENERATION_FAILED"
+    DIRECT_CODE_REVIEW_SUBMITTED = "DIRECT_CODE_REVIEW_SUBMITTED"
+    DIRECT_CODE_REGENERATION_REQUESTED = "DIRECT_CODE_REGENERATION_REQUESTED"
+    DIRECT_CODE_ACCEPTED = "DIRECT_CODE_ACCEPTED"
+    DIRECT_JOB_COMPLETED = "DIRECT_JOB_COMPLETED"
 
     # Line comments
     LINE_COMMENT_ADDED = "LINE_COMMENT_ADDED"

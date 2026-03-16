@@ -44,6 +44,8 @@ class GeneratedCode(Base):
     llm_model_used = Column(String(100), nullable=True)
     llm_tokens_used = Column(Integer, nullable=True)
     generation_time_seconds = Column(Integer, nullable=True)
+    # Which provider was used for this specific generation (OPENAI or ANTHROPIC)
+    llm_provider = Column(String(20), nullable=True)  # mirrors LLMProvider enum values
 
     # Phase 1 (Structured Output) — Agent 2 envelope metadata
     # JSON-serialised lists; None when code was generated before Phase 1

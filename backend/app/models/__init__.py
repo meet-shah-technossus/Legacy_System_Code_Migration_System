@@ -11,6 +11,7 @@ from app.models.code_review import CodeReview
 from app.models.audit import AuditLog
 from app.models.metrics import Metric
 from app.models.line_comment import LineComment
+from app.models.system_config import SystemConfig
 
 __all__ = [
     "MigrationJob",
@@ -22,4 +23,5 @@ __all__ = [
     "AuditLog",
     "Metric",
     "LineComment",
+    "SystemConfig",
 ]

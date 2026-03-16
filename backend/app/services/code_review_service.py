@@ -180,7 +180,12 @@ class CodeReviewService:
         reviewer_comment: str,
         reviewer: Optional[str],
     ) -> None:
-        """Reject current code, trigger LLM regeneration, loop back to review."""
+        """Reject current code, set state to CODE_REGENERATE_REQUESTED, then attempt LLM regeneration.
+
+        The state transition to CODE_REGENERATE_REQUESTED is committed immediately so that even
+        if the LLM call fails, the job remains retryable via the "Regenerate Code" UI action —
+        rather than rolling back to CODE_UNDER_REVIEW and silently discarding the rejection.
+        """
         # State: CODE_UNDER_REVIEW → CODE_REGENERATE_REQUESTED
         self.job_manager.transition_state(
             db=db,
@@ -196,6 +201,11 @@ class CodeReviewService:
             requested_by=reviewer,
             reason=reviewer_comment,
         )
+
+        # Commit state transition NOW so it persists regardless of whether the LLM call
+        # below succeeds or fails.  The caller already committed the review record before
+        # calling this method, so we are starting a fresh transaction here.
+        db.commit()
 
         # Gather all previous rejection comments (general feedback, all rounds)
         all_comments = self._collect_rejection_comments(db, job_id)
@@ -215,15 +225,29 @@ class CodeReviewService:
             .count()
         )
 
-        # Regenerate via LLM with full feedback context (general + inline line comments)
-        new_code = self._regenerate_with_llm(
-            db,
-            job_id,
-            all_comments,
-            reviewer,
-            line_comment_context=line_comment_context,
-            regen_count=regen_count,
-        )
+        # Attempt LLM regeneration.  If the LLM call fails (e.g. missing API key, provider
+        # timeout) we catch the error, log it, and return early.  The job is now durably in
+        # CODE_REGENERATE_REQUESTED so the user can click "Regenerate Code" in the UI to
+        # retry at any time — with a different provider or model if desired.
+        try:
+            new_code = self._regenerate_with_llm(
+                db,
+                job_id,
+                all_comments,
+                reviewer,
+                line_comment_context=line_comment_context,
+                regen_count=regen_count,
+            )
+        except Exception as exc:
+            logger.warning(
+                f"Auto-regeneration LLM call failed for job {job_id}: {exc}. "
+                f"Job is left in CODE_REGENERATE_REQUESTED — reviewer can retry via the UI."
+            )
+            # Do not re-raise.  The review rejection was accepted and committed.  The user
+            # will see the CODE_REGENERATE_REQUESTED state with a "Regenerate Code" button.
+            return
+
+        # LLM succeeded — finish the pipeline.
 
         # Phase 1: Mark all inline comments as included in this regeneration round
         LineCommentService.mark_comments_included(db, job_id)

@@ -10,7 +10,7 @@ from typing import Optional, List
 from fastapi import HTTPException, status
 
 from app.models.job import MigrationJob
-from app.schemas.job import MigrationJobCreate, MigrationJobUpdate, Job2Create
+from app.schemas.job import MigrationJobCreate, MigrationJobUpdate, Job2Create, DirectJobCreate
 from app.core.enums import JobState, JobType, TargetLanguage
 from app.core.config import settings
 from app.core.exceptions import JobNotFoundException, to_http_exception
@@ -43,7 +43,8 @@ class JobManager:
             current_state=JobState.CREATED,
             created_by=job_data.created_by,
             created_at=datetime.now(),
-            updated_at=datetime.now()
+            updated_at=datetime.now(),
+            yaml_llm_provider=job_data.yaml_llm_provider.value if job_data.yaml_llm_provider else None,
         )
 
         db.add(job)
@@ -61,6 +62,48 @@ class JobManager:
             metric_name=MetricsService.JOB_CREATED,
             job_id=job.id,
             tags={"job_type": "YAML_CONVERSION"}
+        )
+        return job
+
+    @staticmethod
+    def create_direct_job(db: Session, job_data: "DirectJobCreate") -> MigrationJob:
+        """Create a new DIRECT_CONVERSION job (Pick Basic → Target Language in one step)."""
+        job = MigrationJob(
+            job_type=JobType.DIRECT_CONVERSION,
+            job_name=job_data.job_name or f"Direct → {job_data.target_language.value} ({job_data.source_filename or 'source'})",
+            description=job_data.description,
+            original_source_code=job_data.original_source_code,
+            source_filename=job_data.source_filename,
+            pick_basic_version=job_data.pick_basic_version,
+            target_language=job_data.target_language,
+            current_state=JobState.CREATED,
+            created_by=job_data.created_by,
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            # Persist the requested LLM provider so Direct Studio re-uses it
+            # automatically — user should never have to re-select it
+            code_llm_provider=job_data.llm_provider.value if job_data.llm_provider else None,
+        )
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+
+        AuditService.log_job_created(
+            db=db,
+            job_id=job.id,
+            created_by=job_data.created_by,
+            metadata={
+                "job_type": "DIRECT_CONVERSION",
+                "target_language": job_data.target_language.value,
+                "source_filename": job_data.source_filename,
+                "llm_provider": job_data.llm_provider.value,
+            },
+        )
+        MetricsService.record_counter(
+            db=db,
+            metric_name=MetricsService.JOB_CREATED,
+            job_id=job.id,
+            tags={"job_type": "DIRECT_CONVERSION"},
         )
         return job
 
@@ -184,7 +227,8 @@ class JobManager:
         limit: Optional[int] = None,
         state: Optional[JobState] = None,
         target_language: Optional[TargetLanguage] = None,
-        job_type: Optional[JobType] = None
+        job_type: Optional[JobType] = None,
+        created_by: Optional[str] = None,
     ) -> List[MigrationJob]:
         """List jobs with optional filters."""
         query = db.query(MigrationJob)
@@ -195,6 +239,8 @@ class JobManager:
             query = query.filter(MigrationJob.target_language == target_language)
         if job_type:
             query = query.filter(MigrationJob.job_type == job_type)
+        if created_by:
+            query = query.filter(MigrationJob.created_by == created_by)
 
         query = query.order_by(MigrationJob.created_at.desc())
         query = apply_pagination(query, skip, limit)
@@ -396,33 +442,33 @@ class JobManager:
         db.commit()
     
     @staticmethod
-    def get_job_statistics(db: Session) -> dict:
-        """Get overall job statistics including queue and job type breakdown."""
-        total = db.query(func.count(MigrationJob.id)).scalar()
+    def get_job_statistics(db: Session, created_by: Optional[str] = None) -> dict:
+        """Get job statistics, optionally scoped to a single user."""
+        def _base():
+            q = db.query(func.count(MigrationJob.id))
+            if created_by:
+                q = q.filter(MigrationJob.created_by == created_by)
+            return q
+
+        total = _base().scalar()
 
         # Count by state
         state_counts = {}
         for state in JobState:
-            count = db.query(func.count(MigrationJob.id))\
-                .filter(MigrationJob.current_state == state).scalar()
-            state_counts[state.value] = count
+            state_counts[state.value] = _base().filter(MigrationJob.current_state == state).scalar()
 
-        # Count by language (only jobs that have a target language)
+        # Count by language
         language_counts = {}
         for lang in TargetLanguage:
-            count = db.query(func.count(MigrationJob.id))\
-                .filter(MigrationJob.target_language == lang).scalar()
-            language_counts[lang.value] = count
+            language_counts[lang.value] = _base().filter(MigrationJob.target_language == lang).scalar()
 
         # Count by job type
-        job1_count = db.query(func.count(MigrationJob.id))\
-            .filter(MigrationJob.job_type == JobType.YAML_CONVERSION).scalar()
-        job2_count = db.query(func.count(MigrationJob.id))\
-            .filter(MigrationJob.job_type == JobType.CODE_CONVERSION).scalar()
+        job1_count    = _base().filter(MigrationJob.job_type == JobType.YAML_CONVERSION).scalar()
+        job2_count    = _base().filter(MigrationJob.job_type == JobType.CODE_CONVERSION).scalar()
+        direct_count  = _base().filter(MigrationJob.job_type == JobType.DIRECT_CONVERSION).scalar()
 
-        # Queue count — Job 1s waiting for Job 2
-        queue_count = db.query(func.count(MigrationJob.id))\
-            .filter(MigrationJob.current_state == JobState.YAML_APPROVED_QUEUED).scalar()
+        # Queue count
+        queue_count = _base().filter(MigrationJob.current_state == JobState.YAML_APPROVED_QUEUED).scalar()
 
         return {
             "total_jobs": total,
@@ -430,7 +476,8 @@ class JobManager:
             "by_language": language_counts,
             "by_job_type": {
                 "job1_yaml_conversion": job1_count,
-                "job2_code_conversion": job2_count
+                "job2_code_conversion": job2_count,
+                "direct_conversion": direct_count,
             },
             "queue_count": queue_count
         }

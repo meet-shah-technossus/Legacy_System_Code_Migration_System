@@ -8,7 +8,7 @@ from sqlalchemy.orm import relationship
 from datetime import datetime
 
 from app.core.database import Base
-from app.core.enums import JobState, JobType, TargetLanguage
+from app.core.enums import JobState, JobType, TargetLanguage, LLMProvider
 
 
 class MigrationJob(Base):
@@ -36,6 +36,14 @@ class MigrationJob(Base):
 
     # Target Configuration (only for Job 2; not asked at Job 1 creation)
     target_language = Column(Enum(TargetLanguage), nullable=True, default=None, index=True)
+
+    # LLM Provider / Model tracking — stored per step so users know which model produced each result
+    # For YAML_CONVERSION jobs: yaml_llm_* records the model used for Pick Basic → YAML
+    yaml_llm_provider = Column(Enum(LLMProvider), nullable=True)   # OPENAI | ANTHROPIC
+    yaml_llm_model    = Column(String(100), nullable=True)          # exact model name string
+    # For CODE_CONVERSION and DIRECT_CONVERSION jobs: code_llm_* records the model used for code gen
+    code_llm_provider = Column(Enum(LLMProvider), nullable=True)
+    code_llm_model    = Column(String(100), nullable=True)
     
     # State Management
     current_state = Column(Enum(JobState), nullable=False, default=JobState.CREATED, index=True)

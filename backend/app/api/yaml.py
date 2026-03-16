@@ -6,6 +6,7 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 
 from app.core.database import get_db
+from app.core.enums import LLMProvider
 from app.services.yaml_service import YAMLService
 from app.models.yaml_version import YAMLVersion
 
@@ -19,6 +20,7 @@ class YAMLGenerationRequest(BaseModel):
     """Request to generate YAML for a job."""
     performed_by: str = Field(..., min_length=1, max_length=255, description="User/system performing the action")
     force_regenerate: bool = Field(default=False, description="Force regeneration even if YAML exists")
+    llm_provider: str = Field(default='OPENAI', description="LLM provider to use: OPENAI or ANTHROPIC")
 
 
 class YAMLVersionResponse(BaseModel):
@@ -116,11 +118,19 @@ def generate_yaml(
     db: Session = Depends(get_db)
 ):
     """Generate YAML for a migration job."""
+    try:
+        provider = LLMProvider(request.llm_provider.upper())
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid llm_provider '{request.llm_provider}'. Use 'OPENAI' or 'ANTHROPIC'."
+        )
     yaml_version = yaml_service.generate_yaml_for_job(
         db=db,
         job_id=job_id,
         performed_by=request.performed_by,
-        force_regenerate=request.force_regenerate
+        force_regenerate=request.force_regenerate,
+        llm_provider=provider
     )
     return YAMLVersionResponse.from_orm(yaml_version)
 
@@ -372,6 +382,11 @@ class YAMLRegenerationRequest(BaseModel):
     performed_by: str = Field(..., min_length=1, max_length=255, description="User/system performing the action")
     include_previous_comments: bool = Field(default=True, description="Include comments from last review")
     additional_instructions: Optional[str] = Field(None, description="Additional guidance for regeneration")
+    llm_provider: Optional[LLMProvider] = Field(
+        None,
+        description="LLM provider override for this regeneration. "
+                    "Omit to re-use the provider from the original YAML generation."
+    )
 
 
 @router.post(
@@ -392,7 +407,8 @@ def regenerate_yaml_with_feedback(
         job_id=job_id,
         performed_by=request.performed_by,
         include_previous_comments=request.include_previous_comments,
-        additional_instructions=request.additional_instructions
+        additional_instructions=request.additional_instructions,
+        llm_provider=request.llm_provider,
     )
     
     return YAMLVersionResponse.from_orm(yaml_version)

@@ -3,8 +3,11 @@ State Machine validation logic.
 Enforces valid state transitions for migration jobs.
 """
 
-from typing import Dict, Set, Optional
+from typing import Dict, Set, Optional, TYPE_CHECKING
 from app.core.enums import JobState
+
+if TYPE_CHECKING:
+    from app.core.enums import JobType
 
 
 class StateMachine:
@@ -18,8 +21,9 @@ class StateMachine:
     VALID_TRANSITIONS: Dict[JobState, Set[JobState]] = {
         # ── Job 1: Pick Basic → YAML ─────────────────────────────────────────
         JobState.CREATED: {
-            JobState.YAML_GENERATED,   # Job 1: YAML generation starts
-            JobState.CODE_GENERATED,   # Job 2: code generation starts immediately
+            JobState.YAML_GENERATED,          # Job 1: YAML generation starts
+            JobState.CODE_GENERATED,          # Job 2: code generation starts immediately
+            JobState.DIRECT_CODE_GENERATED,   # Direct Conversion: skip YAML, go straight to code
         },
         JobState.YAML_GENERATED: {
             JobState.UNDER_REVIEW,
@@ -31,6 +35,7 @@ class StateMachine:
         },
         JobState.REGENERATE_REQUESTED: {
             JobState.YAML_GENERATED,  # Loop back to regenerate
+            JobState.UNDER_REVIEW,    # Cancel the regeneration request — return to review
         },
         JobState.APPROVED: {
             JobState.YAML_APPROVED_QUEUED,  # Job 1 complete — wait in queue for Job 2
@@ -49,13 +54,32 @@ class StateMachine:
             JobState.CODE_ACCEPTED,
         },
         JobState.CODE_REGENERATE_REQUESTED: {
-            JobState.CODE_GENERATED,  # Loop back to regenerate
+            JobState.CODE_GENERATED,      # Loop back to regenerate
+            JobState.CODE_UNDER_REVIEW,   # Cancel the regeneration request — return to review
         },
         JobState.CODE_ACCEPTED: {
             JobState.COMPLETED,
             JobState.CODE_UNDER_REVIEW,  # Allow restoring/reviewing after acceptance
         },
         JobState.COMPLETED: set(),  # Terminal state - no transitions allowed
+
+        # ── Direct Conversion: Pick Basic → Code (no YAML step) ──────────────
+        JobState.DIRECT_CODE_GENERATED: {
+            JobState.DIRECT_CODE_UNDER_REVIEW,
+        },
+        JobState.DIRECT_CODE_UNDER_REVIEW: {
+            JobState.DIRECT_CODE_REGENERATE_REQUESTED,
+            JobState.DIRECT_CODE_ACCEPTED,
+        },
+        JobState.DIRECT_CODE_REGENERATE_REQUESTED: {
+            JobState.DIRECT_CODE_GENERATED,     # Loop back to regenerate
+            JobState.DIRECT_CODE_UNDER_REVIEW,  # Cancel the regeneration request — return to review
+        },
+        JobState.DIRECT_CODE_ACCEPTED: {
+            JobState.DIRECT_COMPLETED,
+            JobState.DIRECT_CODE_UNDER_REVIEW,  # Allow re-review after acceptance
+        },
+        JobState.DIRECT_COMPLETED: set(),  # Terminal state
     }
     
     @classmethod
@@ -76,15 +100,36 @@ class StateMachine:
     @classmethod
     def get_allowed_transitions(cls, current_state: JobState) -> Set[JobState]:
         """
-        Get all valid next states from current state.
-        
-        Args:
-            current_state: Current job state
-            
-        Returns:
-            Set of allowed next states
+        Get all valid next states from current state (not job-type filtered).
         """
         return cls.VALID_TRANSITIONS.get(current_state, set())
+
+    @classmethod
+    def get_allowed_transitions_for_job(
+        cls,
+        current_state: JobState,
+        job_type: 'JobType',
+    ) -> Set[JobState]:
+        """
+        Get valid next states filtered by job type.
+
+        The CREATED state shares three possible first transitions across all job
+        types (YAML_GENERATED, CODE_GENERATED, DIRECT_CODE_GENERATED).  This
+        method limits the result to the single transition that is valid for the
+        concrete job type so the UI only ever shows the right options.
+        """
+        from app.core.enums import JobType  # local import to avoid circular
+        all_allowed = cls.VALID_TRANSITIONS.get(current_state, set())
+        if current_state != JobState.CREATED:
+            return all_allowed
+        # CREATED: filter to the first step specific to this job type
+        if job_type == JobType.YAML_CONVERSION:
+            return {JobState.YAML_GENERATED}
+        if job_type == JobType.CODE_CONVERSION:
+            return {JobState.CODE_GENERATED}
+        if job_type == JobType.DIRECT_CONVERSION:
+            return {JobState.DIRECT_CODE_GENERATED}
+        return all_allowed
     
     @classmethod
     def validate_transition(
@@ -107,6 +152,9 @@ class StateMachine:
         
         if current_state == JobState.COMPLETED:
             return False, "Cannot transition from COMPLETED state - job is finished"
+        
+        if current_state == JobState.DIRECT_COMPLETED:
+            return False, "Cannot transition from DIRECT_COMPLETED state - job is finished"
         
         if cls.can_transition(current_state, new_state):
             return True, None
