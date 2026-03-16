@@ -8,6 +8,8 @@ import type {
   CodeVersionSummary,
   CodeVersionDetail,
   RestoreVersionResponse,
+  LLMProvider,
+  TargetLanguage,
 } from '../types';
 
 export const codeApi = {
@@ -74,4 +76,42 @@ export const codeApi = {
     data: { code_content: string; edited_by: string; edit_reason?: string }
   ): Promise<CodeVersionDetail> =>
     api.post<CodeVersionDetail>(`/jobs/${jobId}/code/versions`, data).then((r) => r.data),
+
+  // ── Direct Conversion ───────────────────────────────────────────────────────
+
+  /** Trigger initial direct conversion (Pick Basic → target language, single LLM call) */
+  directGenerate: (
+    jobId: number,
+    data: { target_language: TargetLanguage; performed_by: string; llm_provider?: LLMProvider; llm_model_override?: string }
+  ): Promise<GeneratedCode> =>
+    api.post<GeneratedCode>(`/jobs/${jobId}/direct/generate`, data).then((r) => r.data),
+
+  /** Regenerate code for a direct conversion job after reviewer rejection */
+  directRegenerate: (
+    jobId: number,
+    data: {
+      target_language: TargetLanguage;
+      performed_by: string;
+      general_feedback?: string;
+      line_comment_context?: string;
+      llm_provider?: LLMProvider;
+      llm_model_override?: string;
+    }
+  ): Promise<GeneratedCode> =>
+    api.post<GeneratedCode>(`/jobs/${jobId}/direct/regenerate`, data).then((r) => r.data),
+
+  /** Submit accept/reject review for a direct conversion job */
+  directReview: (
+    jobId: number,
+    data: {
+      decision: 'DIRECT_APPROVE' | 'DIRECT_REJECT_REGENERATE';
+      general_feedback?: string;
+      reviewed_by?: string;
+      /** The version number the reviewer was looking at — ensures the correct version is accepted */
+      version_number?: number;
+    }
+  ): Promise<{ message: string; job_id: number }> =>
+    api
+      .post<{ message: string; job_id: number }>(`/jobs/${jobId}/direct/review`, data)
+      .then((r) => r.data),
 };

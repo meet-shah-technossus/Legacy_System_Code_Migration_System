@@ -10,6 +10,7 @@ import ErrorBoundary from './components/common/ErrorBoundary';
 import LoginPage from './pages/auth/LoginPage';
 import RegisterPage from './pages/auth/RegisterPage';
 import LandingPage from './pages/LandingPage';
+import DirectStudioPage from './pages/DirectStudioPage';
 import DashboardPage from './pages/DashboardPage';
 import JobsPage from './pages/JobsPage';
 import CreateJobPage from './pages/CreateJobPage';
@@ -55,6 +56,15 @@ export default function App() {
                 <Route
                   path="/"
                   element={<ErrorBoundary><LandingPage /></ErrorBoundary>}
+                />
+                {/* Direct Conversion Studio — same full-screen layout */}
+                <Route
+                  path="/direct-studio"
+                  element={<ErrorBoundary><DirectStudioPage /></ErrorBoundary>}
+                />
+                <Route
+                  path="/direct-studio/:jobId"
+                  element={<ErrorBoundary><DirectStudioPage /></ErrorBoundary>}
                 />
 
                 {/* Standard pages — inner Layout adds scroll + max-width padding */}

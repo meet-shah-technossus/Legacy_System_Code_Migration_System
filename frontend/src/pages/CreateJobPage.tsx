@@ -13,6 +13,7 @@ import {
   HStack,
   Icon,
   Input,
+  Select,
   Text,
   Textarea,
   VStack,
@@ -21,9 +22,14 @@ import {
   Alert,
   AlertIcon,
   CloseButton,
+  RadioGroup,
+  Radio,
+  Stack,
+  Badge,
 } from '@chakra-ui/react';
-import { FiArrowLeft, FiCode, FiUploadCloud, FiUpload, FiLayout } from 'react-icons/fi';
-import { useCreateJob } from '../hooks/useJobs';
+import { FiArrowLeft, FiCode, FiUploadCloud, FiUpload, FiLayout, FiZap } from 'react-icons/fi';
+import { useCreateJob, useCreateDirectJob } from '../hooks/useJobs';
+import type { TargetLanguage, LLMProvider } from '../types';
 
 interface SampleEntry {
   code: string;
@@ -2067,6 +2073,10 @@ END`,
 export default function CreateJobPage() {
   const navigate = useNavigate();
   const createJob = useCreateJob();
+  const createDirectJob = useCreateDirectJob();
+
+  // Strategy: 'two-step' (YAML → Code) or 'direct' (Pick Basic → Code)
+  const [strategy, setStrategy] = useState<'two-step' | 'direct'>('two-step');
 
   const [jobName, setJobName] = useState('');
   const [description, setDescription] = useState('');
@@ -2077,6 +2087,13 @@ export default function CreateJobPage() {
   const [uploadError, setUploadError] = useState<string>('');
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Direct-conversion-only fields
+  const [targetLanguage, setTargetLanguage] = useState<TargetLanguage>('PYTHON');
+  const [llmProvider, setLlmProvider] = useState<LLMProvider>('OPENAI');
+
+  // Two-step-only fields
+  const [yamlLlmProvider, setYamlLlmProvider] = useState<LLMProvider>('OPENAI');
+
   const bg = useColorModeValue('white', 'gray.800');
   const borderColor = useColorModeValue('gray.200', 'gray.700');
   const codeBg = useColorModeValue('gray.50', 'gray.900');
@@ -2085,19 +2102,34 @@ export default function CreateJobPage() {
     ? 'Source code must be at least 10 characters'
     : '';
 
+  const isPending = strategy === 'direct' ? createDirectJob.isPending : createJob.isPending;
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setTouched(true);
     if (sourceCode.trim().length < 10) return;
 
-    const result = await createJob.mutateAsync({
-      job_name: jobName.trim() || undefined,
-      description: description.trim() || undefined,
-      source_filename: sourceFilename.trim() || undefined,
-      original_source_code: sourceCode,
-    });
-
-    navigate(`/jobs/${result.id}`);
+    if (strategy === 'direct') {
+      const result = await createDirectJob.mutateAsync({
+        job_name: jobName.trim() || undefined,
+        description: description.trim() || undefined,
+        source_filename: sourceFilename.trim() || undefined,
+        original_source_code: sourceCode,
+        target_language: targetLanguage,
+        llm_provider: llmProvider,
+      });
+      // Direct jobs need the Direct Studio page
+      navigate(`/direct-studio/${result.id}`);
+    } else {
+      const result = await createJob.mutateAsync({
+        job_name: jobName.trim() || undefined,
+        description: description.trim() || undefined,
+        source_filename: sourceFilename.trim() || undefined,
+        original_source_code: sourceCode,
+        yaml_llm_provider: yamlLlmProvider,
+      });
+      navigate(`/jobs/${result.id}`);
+    }
   };
 
   const handleLoadSample = () => {
@@ -2186,6 +2218,143 @@ export default function CreateJobPage() {
           onChange={handleFileUpload}
         />
         <VStack spacing={6} align="stretch">
+
+          {/* Strategy card */}
+          <Box
+            bg={bg}
+            border="1px solid"
+            borderColor={borderColor}
+            borderRadius="xl"
+            p={6}
+          >
+            <Heading size="sm" mb={4} color="gray.400" textTransform="uppercase" letterSpacing="wider">
+              Migration Strategy
+            </Heading>
+            <RadioGroup value={strategy} onChange={(v) => setStrategy(v as 'two-step' | 'direct')}>
+              <Stack direction="column" spacing={3}>
+                <Box
+                  border="1px solid"
+                  borderColor={strategy === 'two-step' ? 'brand.400' : borderColor}
+                  borderRadius="lg"
+                  p={4}
+                  cursor="pointer"
+                  onClick={() => setStrategy('two-step')}
+                >
+                  <Radio value="two-step" colorScheme="brand">
+                    <HStack spacing={3} align="flex-start">
+                      <Icon as={FiLayout} mt={0.5} color="brand.400" />
+                      <Box>
+                        <HStack>
+                          <Text fontWeight="semibold">Two-Step (YAML → Code)</Text>
+                          <Badge colorScheme="blue" fontSize="xs">Recommended</Badge>
+                        </HStack>
+                        <Text fontSize="sm" color="gray.500" mt={1}>
+                          AI generates a YAML specification first. You review, edit, and approve the YAML, then pick a target language to generate code. Best for complex legacy systems where intermediate YAML review is valuable.
+                        </Text>
+                      </Box>
+                    </HStack>
+                  </Radio>
+                </Box>
+
+                <Box
+                  border="1px solid"
+                  borderColor={strategy === 'direct' ? 'purple.400' : borderColor}
+                  borderRadius="lg"
+                  p={4}
+                  cursor="pointer"
+                  onClick={() => setStrategy('direct')}
+                >
+                  <Radio value="direct" colorScheme="purple">
+                    <HStack spacing={3} align="flex-start">
+                      <Icon as={FiZap} mt={0.5} color="purple.400" />
+                      <Box>
+                        <HStack>
+                          <Text fontWeight="semibold">Direct Conversion (Pick Basic → Code)</Text>
+                          <Badge colorScheme="purple" fontSize="xs">Fast</Badge>
+                        </HStack>
+                        <Text fontSize="sm" color="gray.500" mt={1}>
+                          AI converts Pick Basic directly to the target language in a single step — no intermediate YAML. Faster for straightforward programs; requires target language selection upfront.
+                        </Text>
+                      </Box>
+                    </HStack>
+                  </Radio>
+                </Box>
+              </Stack>
+            </RadioGroup>
+          </Box>
+
+          {/* Direct conversion options (only shown when direct is selected) */}
+          {strategy === 'direct' && (
+            <Box
+              bg={bg}
+              border="1px solid"
+              borderColor="purple.400"
+              borderRadius="xl"
+              p={6}
+            >
+              <Heading size="sm" mb={4} color="purple.300" textTransform="uppercase" letterSpacing="wider">
+                Direct Conversion Options
+              </Heading>
+              <HStack spacing={4} align="flex-start">
+                <FormControl flex={1}>
+                  <FormLabel fontSize="sm">Target Language</FormLabel>
+                  <Select
+                    value={targetLanguage}
+                    onChange={(e) => setTargetLanguage(e.target.value as TargetLanguage)}
+                    size="sm"
+                    fontFamily="mono"
+                  >
+                    <option value="PYTHON">Python</option>
+                    <option value="TYPESCRIPT">TypeScript</option>
+                    <option value="JAVASCRIPT">JavaScript</option>
+                    <option value="JAVA">Java</option>
+                    <option value="CSHARP">C#</option>
+                  </Select>
+                </FormControl>
+                <FormControl flex={1}>
+                  <FormLabel fontSize="sm">LLM Provider</FormLabel>
+                  <Select
+                    value={llmProvider}
+                    onChange={(e) => setLlmProvider(e.target.value as LLMProvider)}
+                    size="sm"
+                  >
+                    <option value="OPENAI">OpenAI</option>
+                    <option value="ANTHROPIC">Anthropic (Claude)</option>
+                  </Select>
+                </FormControl>
+              </HStack>
+            </Box>
+          )}
+
+          {/* Two-step AI options (only shown when two-step is selected) */}
+          {strategy === 'two-step' && (
+            <Box
+              bg={bg}
+              border="1px solid"
+              borderColor="brand.400"
+              borderRadius="xl"
+              p={6}
+            >
+              <Heading size="sm" mb={4} color="brand.300" textTransform="uppercase" letterSpacing="wider">
+                Two-Step AI Options
+              </Heading>
+              <FormControl maxW="280px">
+                <FormLabel fontSize="sm">LLM Provider for YAML Generation</FormLabel>
+                <Select
+                  value={yamlLlmProvider}
+                  onChange={(e) => setYamlLlmProvider(e.target.value as LLMProvider)}
+                  size="sm"
+                >
+                  <option value="OPENAI">OpenAI</option>
+                  <option value="ANTHROPIC">Anthropic (Claude)</option>
+                </Select>
+                <Text fontSize="xs" color="gray.500" mt={1}>
+                  Used when the Studio generates the YAML spec. You can choose a different provider for the code generation step later.
+                </Text>
+              </FormControl>
+            </Box>
+          )}
+
           {/* Job Details card */}
           <Box
             bg={bg}
@@ -2306,41 +2475,51 @@ export default function CreateJobPage() {
           </Box>
 
           {/* Process info */}
-          <Alert status="info" borderRadius="lg" fontSize="sm">
-            <AlertIcon />
-            <Box>
-              <Text fontWeight="semibold" mb={1}>Two-step migration workflow</Text>
-              <Text>After creation, the AI generates a YAML specification based on the source code. Once the YAML is reviewed and approved, the job enters the queue. Open the <strong>Studio</strong> to pick it up from the queue, select a target language, and generate the final code.</Text>
-              <Button
-                mt={2}
-                size="xs"
-                leftIcon={<FiLayout />}
-                colorScheme="purple"
-                variant="outline"
-                onClick={() => navigate('/')}
-              >
-                Open Studio
-              </Button>
-            </Box>
-          </Alert>
+          {strategy === 'two-step' ? (
+            <Alert status="info" borderRadius="lg" fontSize="sm">
+              <AlertIcon />
+              <Box>
+                <Text fontWeight="semibold" mb={1}>Two-step migration workflow</Text>
+                <Text>After creation, the AI generates a YAML specification based on the source code. Once the YAML is reviewed and approved, the job enters the queue. Open the <strong>Studio</strong> to pick it up from the queue, select a target language, and generate the final code.</Text>
+                <Button
+                  mt={2}
+                  size="xs"
+                  leftIcon={<FiLayout />}
+                  colorScheme="purple"
+                  variant="outline"
+                  onClick={() => navigate('/')}
+                >
+                  Open Studio
+                </Button>
+              </Box>
+            </Alert>
+          ) : (
+            <Alert status="info" borderRadius="lg" fontSize="sm" borderColor="purple.400" borderWidth="1px">
+              <AlertIcon color="purple.400" />
+              <Box>
+                <Text fontWeight="semibold" mb={1}>Direct conversion workflow</Text>
+                <Text>After creation you will be taken directly to the <strong>Direct Studio</strong> where you can trigger the AI conversion, review the generated {targetLanguage.charAt(0) + targetLanguage.slice(1).toLowerCase()} code, request regeneration if needed, and accept the final result.</Text>
+              </Box>
+            </Alert>
+          )}
 
           {/* Actions */}
           <Flex justify="flex-end" gap={3}>
             <Button
               variant="ghost"
               onClick={() => navigate('/jobs')}
-              isDisabled={createJob.isPending}
+              isDisabled={isPending}
             >
               Cancel
             </Button>
             <Button
               type="submit"
-              colorScheme="brand"
-              leftIcon={<FiCode />}
-              isLoading={createJob.isPending}
+              colorScheme={strategy === 'direct' ? 'purple' : 'brand'}
+              leftIcon={strategy === 'direct' ? <FiZap /> : <FiCode />}
+              isLoading={isPending}
               loadingText="Creating…"
             >
-              Create Migration Job
+              {strategy === 'direct' ? 'Create Direct Conversion Job' : 'Create Migration Job'}
             </Button>
           </Flex>
         </VStack>

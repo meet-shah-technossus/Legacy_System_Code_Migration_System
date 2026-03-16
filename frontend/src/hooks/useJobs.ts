@@ -5,6 +5,7 @@ import { getErrorMessage } from '../utils/errors';
 import type {
   JobCreate,
   Job2Create,
+  DirectJobCreate,
   JobUpdate,
   JobStateTransition,
   ListJobsParams,
@@ -160,6 +161,22 @@ export function useCreateJob2() {
       qc.invalidateQueries({ queryKey: JOB_KEYS.lists() });
       qc.invalidateQueries({ queryKey: JOB_KEYS.statistics() });
       toast.success(`Job 2 #${newJob.id} created`);
+    },
+    onError: (err) => {
+      toast.error(getErrorMessage(err));
+    },
+  });
+}
+
+/** Create a Direct Conversion job (Pick Basic → Target Language, no YAML step) */
+export function useCreateDirectJob() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: DirectJobCreate) => jobsApi.createDirect(data),
+    onSuccess: (newJob) => {
+      qc.invalidateQueries({ queryKey: JOB_KEYS.lists() });
+      qc.invalidateQueries({ queryKey: JOB_KEYS.statistics() });
+      toast.success(`Direct conversion job #${newJob.id} created`);
     },
     onError: (err) => {
       toast.error(getErrorMessage(err));

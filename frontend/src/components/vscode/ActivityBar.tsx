@@ -29,14 +29,18 @@ const BOTTOM_ITEMS: ActivityItem[] = [
 interface ActivityBarProps {
   activeTab: ActivityBarTab | null;
   onTabChange: (tab: ActivityBarTab) => void;
+  excludeTabs?: ActivityBarTab[];
 }
 
 /**
  * Thin vertical icon bar on the far left — mirrors VS Code's Activity Bar.
  * Clicking an active tab collapses the sidebar; clicking another tab switches it.
  */
-export default function ActivityBar({ activeTab, onTabChange }: ActivityBarProps) {
+export default function ActivityBar({ activeTab, onTabChange, excludeTabs = [] }: ActivityBarProps) {
   const colors = useVSColors();
+
+  const visibleTopItems = TOP_ITEMS.filter((item) => !excludeTabs.includes(item.id));
+  const visibleBottomItems = BOTTOM_ITEMS.filter((item) => !excludeTabs.includes(item.id));
 
   const renderItem = (item: ActivityItem) => {
     const isActive = activeTab === item.id;
@@ -85,10 +89,10 @@ export default function ActivityBar({ activeTab, onTabChange }: ActivityBarProps
       flexShrink={0}
     >
       <VStack spacing={0} align="stretch">
-        {TOP_ITEMS.map(renderItem)}
+        {visibleTopItems.map(renderItem)}
       </VStack>
       <VStack spacing={0} align="stretch" mb={1}>
-        {BOTTOM_ITEMS.map(renderItem)}
+        {visibleBottomItems.map(renderItem)}
       </VStack>
     </Flex>
   );

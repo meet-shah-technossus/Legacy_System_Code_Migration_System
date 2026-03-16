@@ -53,6 +53,7 @@ import { usePrefsStore } from '../store/prefsStore';
 import type { JobState, TargetLanguage, MigrationJobSummary } from '../types';
 
 const JOB_STATES: JobState[] = [
+  // Two-Step: Job 1 (YAML Conversion)
   'CREATED',
   'YAML_GENERATED',
   'UNDER_REVIEW',
@@ -60,11 +61,18 @@ const JOB_STATES: JobState[] = [
   'APPROVED',
   'APPROVED_WITH_COMMENTS',
   'YAML_APPROVED_QUEUED',
+  // Two-Step: Job 2 (Code Conversion)
   'CODE_GENERATED',
   'CODE_UNDER_REVIEW',
   'CODE_REGENERATE_REQUESTED',
   'CODE_ACCEPTED',
   'COMPLETED',
+  // Direct Conversion
+  'DIRECT_CODE_GENERATED',
+  'DIRECT_CODE_UNDER_REVIEW',
+  'DIRECT_CODE_REGENERATE_REQUESTED',
+  'DIRECT_CODE_ACCEPTED',
+  'DIRECT_COMPLETED',
 ];
 
 const LANGUAGES: TargetLanguage[] = ['PYTHON', 'TYPESCRIPT', 'JAVASCRIPT', 'JAVA', 'CSHARP'];
@@ -292,11 +300,17 @@ export default function JobsPage() {
                   </Td>
                   <Td>
                     <Badge
-                      colorScheme={job.job_type === 'CODE_CONVERSION' ? 'purple' : 'blue'}
+                      colorScheme={
+                        job.job_type === 'CODE_CONVERSION' ? 'purple' :
+                        job.job_type === 'DIRECT_CONVERSION' ? 'orange' :
+                        'blue'
+                      }
                       variant="outline"
                       fontSize="xs"
                     >
-                      {job.job_type === 'CODE_CONVERSION' ? 'Job 2' : 'Job 1'}
+                      {job.job_type === 'CODE_CONVERSION' ? 'Job 2' :
+                       job.job_type === 'DIRECT_CONVERSION' ? 'Direct' :
+                       'Job 1'}
                     </Badge>
                   </Td>
                   <Td>
@@ -344,6 +358,31 @@ export default function JobsPage() {
                             colorScheme="teal"
                             onClick={() => navigate('/')}
                             data-testid="studio-btn"
+                          />
+                        </Tooltip>
+                      )}
+                      {job.current_state === 'DIRECT_CODE_REGENERATE_REQUESTED' && (
+                        <Tooltip label="Regenerate direct code" hasArrow>
+                          <IconButton
+                            aria-label="Regenerate direct code"
+                            icon={<FiRefreshCw />}
+                            size="xs"
+                            variant="solid"
+                            colorScheme="yellow"
+                            onClick={() => navigate(`/jobs/${job.id}`)}
+                            data-testid="direct-regen-btn"
+                          />
+                        </Tooltip>
+                      )}
+                      {job.job_type === 'DIRECT_CONVERSION' && job.current_state !== 'DIRECT_CODE_REGENERATE_REQUESTED' && (
+                        <Tooltip label="Open in Direct Studio" hasArrow>
+                          <IconButton
+                            aria-label="Open in Direct Studio"
+                            icon={<FiZap />}
+                            size="xs"
+                            variant="ghost"
+                            colorScheme="purple"
+                            onClick={() => navigate(`/direct-studio/${job.id}`)}
                           />
                         </Tooltip>
                       )}

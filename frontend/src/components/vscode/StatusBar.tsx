@@ -84,6 +84,7 @@ export default function StatusBar() {
         <StatusItem label="UTF-8" />
         <StatusItem label="LF" />
         <StatusItem label="TypeScript JSX" />
+        <StatusItem label="v1.0.0.0" title="Legacy Migration System v1.0.0.0 · © 2026 Technossus" />
       </HStack>
     </Flex>
   );

@@ -26,6 +26,9 @@ export interface VSCodeLayoutProps {
 
   /** Content rendered inside the right chat / AI panel. */
   chat?: ReactNode;
+
+  /** Activity bar tabs to hide (e.g. ['queue'] for Direct Studio) */
+  excludeTabs?: ActivityBarTab[];
 }
 
 const MIN_SIDEBAR = 160;
@@ -55,6 +58,7 @@ export default function VSCodeLayout({
   explorer,
   editor,
   chat,
+  excludeTabs = [],
 }: VSCodeLayoutProps) {
   const colors = useVSColors();
   /* ── panel widths ─────────────────────────────────────── */
@@ -113,7 +117,7 @@ export default function VSCodeLayout({
       <Flex flex={1} overflow="hidden" minH={0}>
 
         {/* Activity Bar */}
-        <ActivityBar activeTab={activeTab} onTabChange={handleTabChange} />
+        <ActivityBar activeTab={activeTab} onTabChange={handleTabChange} excludeTabs={excludeTabs} />
 
         {/* Explorer / Sidebar */}
         {showSidebar && (

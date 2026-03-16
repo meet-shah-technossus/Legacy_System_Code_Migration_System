@@ -25,18 +25,19 @@ import {
   Divider,
 } from '@chakra-ui/react';
 import { MoonIcon, SunIcon, HamburgerIcon } from '@chakra-ui/icons';
-import { FiGrid, FiCode, FiCheckSquare, FiBarChart2, FiActivity, FiSettings, FiLogOut, FiLayout } from 'react-icons/fi';
+import { FiGrid, FiCode, FiCheckSquare, FiBarChart2, FiActivity, FiSettings, FiLogOut, FiLayout, FiZap } from 'react-icons/fi';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuthStore } from '../../store/authStore';
 import NotificationBell from '../common/NotificationBell';
 
 const NAV_LINKS = [
-  { label: 'Studio',    to: '/',          icon: FiLayout, exact: true },
-  { label: 'Dashboard', to: '/dashboard', icon: FiGrid },
-  { label: 'Jobs',      to: '/jobs',      icon: FiCode },
-  { label: 'Reviews',   to: '/reviews',   icon: FiCheckSquare },
-  { label: 'Analytics', to: '/analytics', icon: FiBarChart2 },
-  { label: 'Audit',     to: '/audit',     icon: FiActivity },
+  { label: 'Studio',        to: '/',               icon: FiLayout, exact: true },
+  { label: 'Direct Studio', to: '/direct-studio',  icon: FiZap },
+  { label: 'Dashboard',    to: '/dashboard',      icon: FiGrid },
+  { label: 'Jobs',         to: '/jobs',           icon: FiCode },
+  { label: 'Reviews',      to: '/reviews',        icon: FiCheckSquare },
+  { label: 'Analytics',    to: '/analytics',      icon: FiBarChart2 },
+  { label: 'Audit',        to: '/audit',          icon: FiActivity },
 ];
 
 export default function Navbar() {
@@ -98,7 +99,7 @@ export default function Navbar() {
             Legacy Migration
           </Text>
           <Badge colorScheme="blue" variant="subtle" fontSize="xs">
-            BETA
+            v1.0.0.0
           </Badge>
         </HStack>
 
@@ -175,7 +176,10 @@ export default function Navbar() {
           <DrawerHeader borderBottomWidth="1px">
             <HStack spacing={2}>
               <Text color="blue.400">🔄</Text>
-              <Text fontSize="md" fontWeight="bold">Legacy Migration</Text>
+              <VStack align="start" spacing={0}>
+                <Text fontSize="md" fontWeight="bold">Legacy Migration</Text>
+                <Text fontSize="10px" color="gray.400">v1.0.0.0 · © Technossus</Text>
+              </VStack>
             </HStack>
           </DrawerHeader>
           <DrawerBody px={3} py={4}>
@@ -269,6 +273,17 @@ export default function Navbar() {
                 <Icon as={FiLogOut} boxSize={4} />
                 Logout
               </Flex>
+
+              {/* Copyright footer */}
+              <Box pt={4} pb={2}>
+                <Divider mb={3} />
+                <Text fontSize="10px" color="gray.400" textAlign="center">
+                  © 2026 Technossus. All rights reserved.
+                </Text>
+                <Text fontSize="10px" color="gray.500" textAlign="center">
+                  Legacy Migration System v1.0.0.0
+                </Text>
+              </Box>
             </VStack>
           </DrawerBody>
         </DrawerContent>

@@ -20,7 +20,7 @@ import {
   useColorModeValue,
 } from '@chakra-ui/react';
 import { Link, useNavigate } from 'react-router-dom';
-import { FiLayout } from 'react-icons/fi';
+import { FiLayout, FiZap } from 'react-icons/fi';
 import {
   BarChart,
   Bar,
@@ -63,6 +63,12 @@ const STATE_COLORS: Record<string, string> = {
   CODE_REGENERATE_REQUESTED: '#FC8181',
   CODE_ACCEPTED: '#68D391',
   COMPLETED: '#38A169',
+  // Direct Conversion states
+  DIRECT_CODE_GENERATED: '#7c3aed',
+  DIRECT_CODE_UNDER_REVIEW: '#9333ea',
+  DIRECT_CODE_REGENERATE_REQUESTED: '#f59e0b',
+  DIRECT_CODE_ACCEPTED: '#10b981',
+  DIRECT_COMPLETED: '#059669',
 };
 
 // ─── Stat Card ────────────────────────────────────────────────────────────────
@@ -191,6 +197,8 @@ export default function DashboardPage() {
     'YAML_GENERATED', 'UNDER_REVIEW', 'REGENERATE_REQUESTED',
     'APPROVED', 'APPROVED_WITH_COMMENTS', 'CODE_GENERATED',
     'CODE_UNDER_REVIEW', 'CODE_REGENERATE_REQUESTED',
+    // Direct Conversion active states
+    'DIRECT_CODE_GENERATED', 'DIRECT_CODE_UNDER_REVIEW', 'DIRECT_CODE_REGENERATE_REQUESTED',
   ]);
   const hasActiveJobs = false;
   useJobsListPolling(hasActiveJobs);
@@ -200,6 +208,16 @@ export default function DashboardPage() {
   const completedJobs = stats?.by_state?.COMPLETED ?? 0;
   const queuedJobs = (stats?.by_state?.YAML_APPROVED_QUEUED ?? 0) as number;
   const activeJobs = jobs?.filter((j) => ACTIVE_STATES.has(j.current_state)).length ?? 0;
+
+  // ── Direct Conversion computed values ────────────────────────────────────────
+  const directCompleted = (stats?.by_state?.DIRECT_COMPLETED as number) ?? 0;
+  const directActive = (
+    ((stats?.by_state?.DIRECT_CODE_GENERATED as number) ?? 0) +
+    ((stats?.by_state?.DIRECT_CODE_UNDER_REVIEW as number) ?? 0) +
+    ((stats?.by_state?.DIRECT_CODE_REGENERATE_REQUESTED as number) ?? 0) +
+    ((stats?.by_state?.DIRECT_CODE_ACCEPTED as number) ?? 0)
+  );
+  const totalDirectJobs = (stats?.by_job_type as Record<string, number> | undefined)?.direct_conversion ?? 0;
 
   const yamlSuccessRate = metrics
     ? `${metrics.yaml_generation.success_rate.success_rate.toFixed(0)}%`
@@ -257,7 +275,7 @@ export default function DashboardPage() {
           </Text>
         </Box>
         <HStack spacing={2}>
-          <Tooltip label="Open VS Code Studio" hasArrow>
+          <Tooltip label="Open VS Code Studio (Two-step pipeline)" hasArrow>
             <Button
               leftIcon={<Icon as={FiLayout} />}
               colorScheme="purple"
@@ -265,7 +283,18 @@ export default function DashboardPage() {
               size="sm"
               onClick={() => navigate('/')}
             >
-              Open Studio
+              Studio
+            </Button>
+          </Tooltip>
+          <Tooltip label="Open Direct Conversion Studio" hasArrow>
+            <Button
+              leftIcon={<Icon as={FiZap} />}
+              colorScheme="orange"
+              variant="outline"
+              size="sm"
+              onClick={() => navigate('/direct-studio')}
+            >
+              Direct Studio
             </Button>
           </Tooltip>
           <Button colorScheme="blue" size="sm" onClick={() => navigate('/jobs/new')}>
@@ -275,7 +304,7 @@ export default function DashboardPage() {
       </Flex>
 
       {/* Stat cards */}
-      <Grid templateColumns={{ base: '1fr 1fr', md: 'repeat(3, 1fr)', xl: 'repeat(5, 1fr)' }} gap={4}>
+      <Grid templateColumns={{ base: '1fr 1fr', md: 'repeat(3, 1fr)', xl: 'repeat(6, 1fr)' }} gap={4}>
         <StatCard
           label="Total Jobs"
           value={totalJobs}
@@ -320,7 +349,63 @@ export default function DashboardPage() {
           colorScheme={metrics && metrics.errors.total > 0 ? 'red' : 'green'}
           isLoading={metricsLoading}
         />
+        <StatCard
+          label="Direct Completed"
+          value={directCompleted}
+          sub={totalDirectJobs > 0
+            ? `${totalDirectJobs} total direct jobs`
+            : directActive > 0 ? `${directActive} in progress` : 'No direct jobs yet'}
+          colorScheme="orange"
+          isLoading={statsLoading}
+        />
       </Grid>
+
+      {/* Direct Conversion overview */}
+      {(totalDirectJobs > 0 || directActive > 0) && (
+        <SectionCard title="Direct Conversion" isLoading={statsLoading}>
+          <Grid templateColumns={{ base: '1fr', sm: 'repeat(2, 1fr)', md: 'repeat(4, 1fr)' }} gap={4}>
+            <Box>
+              <Text fontSize="xs" color={textMuted}>Total Direct Jobs</Text>
+              <Text fontSize="2xl" fontWeight="bold">{totalDirectJobs}</Text>
+            </Box>
+            <Box>
+              <Text fontSize="xs" color={textMuted}>Completed</Text>
+              <Text fontSize="2xl" fontWeight="bold" color="green.400">{directCompleted}</Text>
+            </Box>
+            <Box>
+              <Text fontSize="xs" color={textMuted}>In Progress</Text>
+              <Text fontSize="2xl" fontWeight="bold" color="orange.400">{directActive}</Text>
+            </Box>
+            <Box>
+              <Text fontSize="xs" color={textMuted}>Completion Rate</Text>
+              <Text fontSize="2xl" fontWeight="bold" color="purple.400">
+                {totalDirectJobs > 0 ? `${Math.round((directCompleted / totalDirectJobs) * 100)}%` : '—'}
+              </Text>
+            </Box>
+          </Grid>
+          <Flex mt={4} gap={2} wrap="wrap">
+            <Button
+              as={Link}
+              to="/direct-studio"
+              size="xs"
+              leftIcon={<Icon as={FiZap} />}
+              colorScheme="orange"
+              variant="outline"
+            >
+              Open Direct Studio
+            </Button>
+            <Button
+              as={Link}
+              to="/jobs/new"
+              size="xs"
+              colorScheme="blue"
+              variant="ghost"
+            >
+              + New Direct Job
+            </Button>
+          </Flex>
+        </SectionCard>
+      )}
 
       {/* Charts row */}
       <Grid templateColumns={{ base: '1fr', lg: '1fr 1fr' }} gap={5}>

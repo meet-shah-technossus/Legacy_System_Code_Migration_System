@@ -45,6 +45,12 @@ const STATE_LABELS: Record<JobState, string> = {
   CODE_REGENERATE_REQUESTED: 'Code Regeneration Requested',
   CODE_ACCEPTED: 'Code Accepted',
   COMPLETED: 'Completed',
+  // Direct Conversion states
+  DIRECT_CODE_GENERATED: 'Direct Code Ready',
+  DIRECT_CODE_UNDER_REVIEW: 'Direct Code Review',
+  DIRECT_CODE_REGENERATE_REQUESTED: 'Direct Regen Requested',
+  DIRECT_CODE_ACCEPTED: 'Direct Code Accepted',
+  DIRECT_COMPLETED: 'Direct Completed',
 };
 
 export function stateLabel(state: JobState): string {
@@ -77,6 +83,17 @@ export function stateColorScheme(state: JobState): string {
       return 'teal';
     case 'COMPLETED':
       return 'green';
+    // Direct Conversion states
+    case 'DIRECT_CODE_GENERATED':
+      return 'purple';
+    case 'DIRECT_CODE_UNDER_REVIEW':
+      return 'violet';
+    case 'DIRECT_CODE_REGENERATE_REQUESTED':
+      return 'yellow';
+    case 'DIRECT_CODE_ACCEPTED':
+      return 'teal';
+    case 'DIRECT_COMPLETED':
+      return 'green';
     default:
       return 'gray';
   }
@@ -89,7 +106,7 @@ export function isInProgressState(_state: JobState): boolean {
 
 /** Whether the state is terminal (no further transitions) */
 export function isTerminalState(state: JobState): boolean {
-  return state === 'COMPLETED' || state === 'YAML_APPROVED_QUEUED';
+  return state === 'COMPLETED' || state === 'DIRECT_COMPLETED' || state === 'YAML_APPROVED_QUEUED';
 }
 
 // ─── Language Helpers ─────────────────────────────────────────────────────────

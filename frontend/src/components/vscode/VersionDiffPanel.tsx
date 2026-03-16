@@ -62,6 +62,16 @@ interface ContextBlock {
 
 // ─── Convert raw diff output into hunks ──────────────────────────────────────
 
+/**
+ * Split a diff `change.value` into individual lines, stripping the trailing
+ * empty string that the `diff` library appends to every value (because values
+ * always end with '\n'). Without this, joining the result array with '\n'
+ * would insert a spurious blank line between every unchanged block and the
+ * following changed block.
+ */
+const splitLines = (value: string): string[] =>
+  value.split('\n').filter((_, idx, arr) => idx < arr.length - 1 || arr[idx] !== '');
+
 /** Build diff hunks from raw `diff` output. */
 function buildHunks(changes: Change[]): { hunks: DiffHunk[]; unchangedBefore: string[][] } {
   const hunks: DiffHunk[] = [];
@@ -76,9 +86,6 @@ function buildHunks(changes: Change[]): { hunks: DiffHunk[]; unchangedBefore: st
 
   // Collect unchanged context before each hunk (up to 3 lines)
   let pendingContext: string[] = [];
-
-  const splitLines = (value: string) =>
-    value.split('\n').filter((_, idx, arr) => idx < arr.length - 1 || arr[idx] !== '');
 
   while (i < changes.length) {
     const change = changes[i];
@@ -132,22 +139,110 @@ function buildHunks(changes: Change[]): { hunks: DiffHunk[]; unchangedBefore: st
 
 // ─── Reconstruct merged text from hunks ──────────────────────────────────────
 
+/**
+ * Build the merged result when the editor has a draft (unsaved manual edits).
+ *
+ * Strategy: use draftContent as the base so the user's manual edits are always
+ * preserved.  Only patch regions where the user explicitly chose 'old' — those
+ * are the only lines that differ from what draftContent already contains:
+ *
+ *   choice='committed' → v2 lines are already in draftContent (it's built on v2) ✓
+ *   choice='draft'     → draft lines are already in draftContent ✓
+ *   choice='old'       → find the v2 lines inside draftContent and replace them
+ *                        with the v1 (old) originals
+ *
+ * @param draftContent      The in-browser draft (user's current edited text)
+ * @param draftVsToChanges  diff(toDBText, draftContent) — maps v2 positions into draft
+ * @param hunks             displayHunks with the user's per-hunk choices
+ */
+function buildMergedTextFromDraft(
+  draftContent: string,
+  draftVsToChanges: Change[],
+  hunks: DiffHunk[],
+): string {
+  // Hunks where the user reverted to the old (v1) version
+  const oldChoiceHunks = hunks.filter(h => h.choice === 'old' && h.addedLines.length > 0);
+
+  if (oldChoiceHunks.length === 0) {
+    // All choices are 'committed' or 'draft': draftContent is already the
+    // correct result — return it without trailing newline (caller normalizes).
+    const d = draftContent;
+    return d.endsWith('\n') ? d.slice(0, -1) : d;
+  }
+
+  // Build a v2-line-index (0-based) → draft-line-index map by walking draftVsToChanges.
+  //   unchanged → lines present at the same relative offset in both v2 and draft
+  //   removed   → v2 line deleted by the user in their draft (mark as -1)
+  //   added     → pure draft insertion; no v2 counterpart (draftCursor advances only)
+  const v2ToDraftIdx: number[] = [];
+  let v2c = 0, draftc = 0;
+  for (const change of draftVsToChanges) {
+    const n = splitLines(change.value).length;
+    if (!change.added && !change.removed) {
+      for (let i = 0; i < n; i++) v2ToDraftIdx[v2c + i] = draftc + i;
+      v2c += n; draftc += n;
+    } else if (change.removed) {
+      for (let i = 0; i < n; i++) v2ToDraftIdx[v2c + i] = -1;
+      v2c += n;
+    } else {
+      draftc += n; // pure draft addition — advances draft cursor only
+    }
+  }
+
+  // Mutable line array of draftContent (trailing newline stripped)
+  const resultLines = draftContent.split('\n');
+  if (resultLines[resultLines.length - 1] === '') resultLines.pop();
+
+  // Build patch operations sorted in REVERSE draft-position order so that
+  // earlier splices don't shift the indices of later ones.
+  const patches = oldChoiceHunks
+    .map(hunk => {
+      const v2Start = hunk.newLineStart - 1; // 1-based → 0-based
+      const v2End   = v2Start + hunk.addedLines.length;
+      // Find the contiguous range of draft lines that correspond to this v2 hunk
+      let dStart = -1, dEnd = -1;
+      for (let i = v2Start; i < v2End; i++) {
+        const d = v2ToDraftIdx[i];
+        if (d !== undefined && d !== -1) {
+          if (dStart === -1) dStart = d;
+          dEnd = d + 1;
+        }
+      }
+      return { dStart, dEnd, replacement: hunk.removedLines };
+    })
+    .filter(p => p.dStart !== -1)
+    .sort((a, b) => b.dStart - a.dStart); // reverse order for safe splicing
+
+  for (const { dStart, dEnd, replacement } of patches) {
+    resultLines.splice(dStart, dEnd - dStart, ...replacement);
+  }
+
+  return resultLines.join('\n');
+}
+
 function buildMergedText(oldText: string, changes: Change[], hunks: DiffHunk[]): string {
   const result: string[] = [];
   let hunkIdx = 0;
 
   for (const change of changes) {
     if (!change.added && !change.removed) {
-      // Unchanged block
-      const lines = change.value.split('\n');
-      result.push(...lines);
+      // Unchanged block — use splitLines so the trailing empty string that
+      // diffLines appends to every value is NOT pushed into the result array.
+      // Raw .split('\n') would leave a trailing '' that becomes a spurious
+      // blank line when the array is joined with '\n'.
+      result.push(...splitLines(change.value));
     } else if (change.removed) {
       // Output removed lines only when user chose 'old' for this hunk
       const hunk = hunks[hunkIdx];
       if (hunk?.choice === 'old') {
         result.push(...hunk.removedLines);
       }
-      // For 'committed' or 'draft', skip — output happens in the added branch
+      // For 'committed' or 'draft', skip — output happens in the added branch.
+      // For pure-removal hunks (addedLines is empty) there will be no following
+      // 'added' change, so we must advance hunkIdx here to stay in sync.
+      if (hunk && hunk.addedLines.length === 0) {
+        hunkIdx++;
+      }
     } else if (change.added) {
       const hunk = hunks[hunkIdx];
       if (hunk?.choice === 'committed') {
@@ -586,12 +681,32 @@ export default function VersionDiffPanel({
 
   // ── apply handler ─────────────────────────────────────────────────────────
   const handleApply = () => {
-    // Walk rawChanges (v1→v2) and apply per-hunk choices.
-    // 'committed' → v2 lines, 'old' → v1 lines, 'draft' → draftLines.
-    // Draft-only hunks (pure new insertions) are not in rawChanges and will be
-    // included by passing draftContent as the base when no committed choice was made.
-    const merged = buildMergedText(oldText, rawChanges, displayHunks);
-    onApply(merged, resolvedFrom ?? 0, resolvedTo ?? 0);
+    // When a draft is present, use draftContent as the base so the user's
+    // manual edits (in regions unchanged between v1→v2) are preserved.
+    // Without this, buildMergedText would reconstruct only from rawChanges
+    // (the v1→v2 diff) and silently drop any draft edits in unchanged regions.
+    //
+    // When no draft is present, fall back to the standard reconstruction from
+    // rawChanges which correctly handles all three hunk choices.
+    const merged = (isDraftOverlay && draftContent)
+      ? buildMergedTextFromDraft(draftContent, draftVsToChanges, displayHunks)
+      : buildMergedText(oldText, rawChanges, displayHunks);
+
+    // ── Normalize trailing newline ──────────────────────────────────────────
+    // Both build functions return a string WITHOUT a trailing '\n'.
+    // toDBText (from the DB) normally ends WITH '\n'.
+    // If we pass the stripped string as overrideContent, the next call to
+    //   diffLines(toDBText, overrideContent)
+    // sees the very last line as CHANGED ("children: []\n" ≠ "children: []")
+    // even though the content is identical — this is what generates the
+    // spurious yellow duplicate-last-line the user sees.
+    // Match overrideContent's trailing newline exactly to toDBText so every
+    // subsequent diff starts from a clean baseline.
+    const normalized = toDBText.endsWith('\n')
+      ? (merged.endsWith('\n') ? merged : merged + '\n')
+      : (merged.endsWith('\n') ? merged.slice(0, -1) : merged);
+
+    onApply(normalized, resolvedFrom ?? 0, resolvedTo ?? 0);
     onClose();
   };
 

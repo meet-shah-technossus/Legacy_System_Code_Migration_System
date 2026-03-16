@@ -44,12 +44,13 @@ import {
   FiSave,
   FiGitBranch,
   FiZap,
+  FiXCircle,
 } from 'react-icons/fi';
 import { useNavigate } from 'react-router-dom';
 import { VS, useVSColors } from './vscodeTheme';
 import ResizeHandle from './ResizeHandle';
 import VersionDiffPanel from './VersionDiffPanel';
-import { useJob, useParentJob, useJobWithSource, useAddLineComment } from '../../hooks/useJobs';
+import { useJob, useParentJob, useJobWithSource, useAddLineComment, useUpdateJob, useTransitionJob } from '../../hooks/useJobs';
 import { useQueryClient, useIsMutating } from '@tanstack/react-query';
 import { useLatestYAML, useGenerateYAML, YAML_KEYS, useEditYAMLVersion, useYAMLVersions, useYAMLVersion, useCreateYAMLVersion, useApproveYAML } from '../../hooks/useYaml';
 import { useGeneratedCode, useGenerateCode, useEditCode, useCodeVersions, useCodeVersion, useCreateCodeVersion } from '../../hooks/useCode';
@@ -273,12 +274,27 @@ function EditorInfoBar({ job, lineCount, charCount, language }: EditorInfoBarPro
         )}
         <Text fontSize="11px" color={colors.fgMuted}>{language}</Text>
         <Text fontSize="11px" color={colors.fgMuted}>UTF-8</Text>
+        {(() => {
+          const provider = job.job_type === 'YAML_CONVERSION' ? job.yaml_llm_provider : job.code_llm_provider;
+          if (!provider) return null;
+          return (
+            <Text
+              fontSize="11px"
+              color={provider === 'ANTHROPIC' ? '#d97706' : '#3b82f6'}
+              fontWeight="medium"
+            >
+              {provider === 'ANTHROPIC' ? 'Claude' : 'OpenAI'}
+            </Text>
+          );
+        })()}
       </HStack>
     </Flex>
   );
 }
 
 // ─── GenerateCTA ──────────────────────────────────────────────────────────────
+
+type LLMProviderChoice = 'OPENAI' | 'ANTHROPIC';
 
 interface GenerateCTAProps {
   job: MigrationJob;
@@ -297,53 +313,170 @@ function GenerateCTA({ job }: GenerateCTAProps) {
   const label  = isJob1 ? 'Generate YAML' : 'Generate Code';
   const isLoading = genYAML.isPending || genCode.isPending;
 
-  const handleGenerate = () => {
+  const updateJobProvider = useUpdateJob(job.id);
+  const [showProviderModal, setShowProviderModal] = useState(false);
+  // Default to the provider stored on the job (set at creation time or last used)
+  const defaultProvider: LLMProviderChoice =
+    (isJob1 ? job.yaml_llm_provider : job.code_llm_provider) === 'ANTHROPIC'
+      ? 'ANTHROPIC'
+      : 'OPENAI';
+  const [selectedProvider, setSelectedProvider] = useState<LLMProviderChoice>(defaultProvider);
+
+  // Keep the selector in sync when job data is refreshed (e.g. after a PATCH from Job Detail)
+  useEffect(() => {
+    setSelectedProvider(defaultProvider);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [defaultProvider]);
+
+  // Persist the chosen provider to the job record and update local state
+  const handleProviderChange = (provider: LLMProviderChoice) => {
+    setSelectedProvider(provider);
     if (isJob1) {
-      genYAML.mutate({ performed_by: performer });
+      updateJobProvider.mutate({ yaml_llm_provider: provider });
+    } else {
+      updateJobProvider.mutate({ code_llm_provider: provider });
+    }
+  };
+
+  const handleConfirmGenerate = () => {
+    setShowProviderModal(false);
+    // Persist provider preference before firing generation
+    if (isJob1) {
+      updateJobProvider.mutate({ yaml_llm_provider: selectedProvider });
+      genYAML.mutate({ performed_by: performer, llm_provider: selectedProvider });
     } else if (job.target_language) {
-      genCode.mutate({ target_language: job.target_language, performed_by: performer, use_llm: true });
+      updateJobProvider.mutate({ code_llm_provider: selectedProvider });
+      genCode.mutate({ target_language: job.target_language, performed_by: performer, use_llm: true, llm_provider: selectedProvider });
     }
   };
 
   return (
-    <VStack flex={1} justify="center" align="center" spacing={5} h="100%" userSelect="none">
-      <Icon as={FiFileText as ComponentType} boxSize={14} color={colors.fgMuted} opacity={0.15} />
-      <VStack spacing={1}>
-        <Text fontSize="16px" color={colors.fg} opacity={0.5} fontWeight="300">
-          No content yet
-        </Text>
-        <Text fontSize="12px" color={colors.fgMuted} opacity={0.45}>
-          {isJob1 ? 'Run the LLM to generate YAML from your Pick Basic source' : 'Run the LLM to generate code from the approved YAML'}
-        </Text>
+    <>
+      <VStack flex={1} justify="center" align="center" spacing={5} h="100%" userSelect="none">
+        <Icon as={FiFileText as ComponentType} boxSize={14} color={colors.fgMuted} opacity={0.15} />
+        <VStack spacing={1}>
+          <Text fontSize="16px" color={colors.fg} opacity={0.5} fontWeight="300">
+            No content yet
+          </Text>
+          <Text fontSize="12px" color={colors.fgMuted} opacity={0.45}>
+            {isJob1 ? 'Run the LLM to generate YAML from your Pick Basic source' : 'Run the LLM to generate code from the approved YAML'}
+          </Text>
+        </VStack>
+        <Flex gap={3} mt={2}>
+          <Button
+            size="sm"
+            leftIcon={<Icon as={FiPlay as ComponentType} />}
+            colorScheme="blue"
+            variant="solid"
+            isLoading={isLoading}
+            onClick={() => setShowProviderModal(true)}
+            fontSize="12px"
+            h="28px"
+          >
+            {label}
+          </Button>
+          <Button
+            size="sm"
+            leftIcon={<Icon as={FiExternalLink as ComponentType} />}
+            variant="outline"
+            fontSize="12px"
+            h="28px"
+            color={colors.fgMuted}
+            borderColor={colors.inputBorder}
+            _hover={{ color: colors.fgActive, borderColor: colors.fg }}
+            onClick={() => navigate(`/jobs/${job.id}`)}
+          >
+            Open Job Detail
+          </Button>
+        </Flex>
+        {/* Always-visible preferred-provider selector — changes persist to the job record */}
+        <HStack spacing={2} opacity={0.7} mt={1}>
+          <Text fontSize="11px" color={colors.fgMuted}>AI Provider:</Text>
+          <Select
+            size="xs" h="22px" fontSize="11px" w="120px"
+            value={selectedProvider}
+            onChange={(e) => handleProviderChange(e.target.value as LLMProviderChoice)}
+            isDisabled={updateJobProvider.isPending}
+            sx={{ bg: 'rgba(0,0,0,0.25)', borderColor: colors.inputBorder, color: colors.fg, fontFamily: 'mono' }}
+          >
+            <option value="OPENAI">OpenAI</option>
+            <option value="ANTHROPIC">Anthropic</option>
+          </Select>
+        </HStack>
       </VStack>
-      <Flex gap={3} mt={2}>
-        <Button
-          size="sm"
-          leftIcon={<Icon as={FiPlay as ComponentType} />}
-          colorScheme="blue"
-          variant="solid"
-          isLoading={isLoading}
-          onClick={handleGenerate}
-          fontSize="12px"
-          h="28px"
-        >
-          {label}
-        </Button>
-        <Button
-          size="sm"
-          leftIcon={<Icon as={FiExternalLink as ComponentType} />}
-          variant="outline"
-          fontSize="12px"
-          h="28px"
-          color={colors.fgMuted}
-          borderColor={colors.inputBorder}
-          _hover={{ color: colors.fgActive, borderColor: colors.fg }}
-          onClick={() => navigate(`/jobs/${job.id}`)}
-        >
-          Open Job Detail
-        </Button>
-      </Flex>
-    </VStack>
+
+      {/* Provider picker modal */}
+      <Modal isOpen={showProviderModal} onClose={() => setShowProviderModal(false)} isCentered size="sm">
+        <ModalOverlay bg="blackAlpha.600" />
+        <ModalContent bg={colors.sidebar} border="1px solid" borderColor={colors.inputBorder} borderRadius="8px">
+          <ModalHeader fontSize="14px" color={colors.fg} borderBottom="1px solid" borderColor={colors.inputBorder} pb={3}>
+            Choose AI Provider — {label}
+          </ModalHeader>
+          <ModalCloseButton color={colors.fgMuted} />
+          <ModalBody py={4}>
+            <VStack spacing={2}>
+              {/* OpenAI option */}
+              <Box
+                w="100%"
+                p={3}
+                borderRadius="6px"
+                border="2px solid"
+                borderColor={selectedProvider === 'OPENAI' ? '#3b82f6' : colors.inputBorder}
+                bg={selectedProvider === 'OPENAI' ? 'rgba(59,130,246,0.08)' : 'transparent'}
+                cursor="pointer"
+                onClick={() => setSelectedProvider('OPENAI')}
+                transition="all 0.15s"
+                _hover={{ borderColor: '#3b82f6' }}
+              >
+                <HStack spacing={3}>
+                  <Box w="8px" h="8px" borderRadius="full" bg={selectedProvider === 'OPENAI' ? '#3b82f6' : colors.inputBorder} />
+                  <VStack align="start" spacing={0}>
+                    <Text fontSize="13px" fontWeight="600" color={colors.fg}>OpenAI GPT-4o</Text>
+                    <Text fontSize="11px" color={colors.fgMuted}>Reliable structured output, fast responses</Text>
+                  </VStack>
+                </HStack>
+              </Box>
+
+              {/* Anthropic option */}
+              <Box
+                w="100%"
+                p={3}
+                borderRadius="6px"
+                border="2px solid"
+                borderColor={selectedProvider === 'ANTHROPIC' ? '#d97706' : colors.inputBorder}
+                bg={selectedProvider === 'ANTHROPIC' ? 'rgba(217,119,6,0.08)' : 'transparent'}
+                cursor="pointer"
+                onClick={() => setSelectedProvider('ANTHROPIC')}
+                transition="all 0.15s"
+                _hover={{ borderColor: '#d97706' }}
+              >
+                <HStack spacing={3}>
+                  <Box w="8px" h="8px" borderRadius="full" bg={selectedProvider === 'ANTHROPIC' ? '#d97706' : colors.inputBorder} />
+                  <VStack align="start" spacing={0}>
+                    <Text fontSize="13px" fontWeight="600" color={colors.fg}>Claude Sonnet</Text>
+                    <Text fontSize="11px" color={colors.fgMuted}>Deep reasoning, excellent code understanding</Text>
+                  </VStack>
+                </HStack>
+              </Box>
+            </VStack>
+          </ModalBody>
+          <ModalFooter borderTop="1px solid" borderColor={colors.inputBorder} gap={2} pt={3}>
+            <Button size="sm" variant="ghost" onClick={() => setShowProviderModal(false)} color={colors.fgMuted} fontSize="12px">
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              colorScheme={selectedProvider === 'ANTHROPIC' ? 'orange' : 'blue'}
+              leftIcon={<Icon as={FiZap as ComponentType} />}
+              onClick={handleConfirmGenerate}
+              fontSize="12px"
+            >
+              {label} with {selectedProvider === 'ANTHROPIC' ? 'Claude' : 'OpenAI'}
+            </Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
+    </>
   );
 }
 
@@ -536,6 +669,9 @@ function MonacoView({ content, language, onMetrics, pendingLineComments, codeTyp
   // can avoid clearing hoverLine in the Monaco onMouseMove handler (which would
   // cause the button to flicker on/off while being hovered).
   const isHoveringButton    = useRef(false);
+  // Suppresses gutter hover for ~350ms after the form closes so the + button
+  // doesn't immediately reappear while the cursor is still over the gutter.
+  const suppressHoverRef    = useRef(false);
 
   /* ── local state ─────────────────────────────────────────────── */
   const [hoverLine,       setHoverLine]       = useState<number | null>(null);
@@ -577,18 +713,27 @@ function MonacoView({ content, language, onMetrics, pendingLineComments, codeTyp
   const cancelForm = () => {
     setCommentFormLine(null);
     setCommentText('');
+    setHoverLine(null);
+    suppressHoverRef.current = true;
+    setTimeout(() => { suppressHoverRef.current = false; }, 350);
   };
 
   const submitComment = () => {
     if (!commentText.trim() || commentFormLine == null) return;
+    // Capture the actual code at this line so the LLM has full context
+    const codeLine = editorRef.current?.getModel()?.getLineContent(commentFormLine)?.trim();
     onAddLineComment({
       id: crypto.randomUUID(),
       lineNumber: commentFormLine,
       text: commentText.trim(),
+      codeLine: codeLine || undefined,
       codeType,
     });
     setCommentText('');
     setCommentFormLine(null);
+    setHoverLine(null);
+    suppressHoverRef.current = true;
+    setTimeout(() => { suppressHoverRef.current = false; }, 350);
   };
 
   /* ── onMount ─────────────────────────────────────────────────── */
@@ -608,6 +753,7 @@ function MonacoView({ content, language, onMetrics, pendingLineComments, codeTyp
     editor.onMouseMove((e: Parameters<Parameters<typeof editor.onMouseMove>[0]>[0]) => {
       const { type, position } = e.target as { type: number; position?: { lineNumber: number } };
       if ((type === 3 || type === 2) && position) {
+        if (suppressHoverRef.current) return;
         const rect = containerRef.current?.getBoundingClientRect();
         const relY = rect ? e.event.posy - rect.top : e.event.posy;
         setHoverLine(position.lineNumber);
@@ -825,6 +971,10 @@ function JobEditor({ jobId, pendingLineComments, onAddLineComment, onClearLineCo
   // Review modal state
   const [reviewModalDecision, setReviewModalDecision] = useState<ReviewDecision | null>(null);
   const [generalComment,      setGeneralComment]      = useState('');
+  // Syntax error panel — dismissed per session so the user isn't constantly shown it
+  const [syntaxErrorsDismissed, setSyntaxErrorsDismissed] = useState(false);
+  // Track which generatedCode.id the dismissal belongs to; reset when code is regenerated
+  const [syntaxErrorsDismissedForId, setSyntaxErrorsDismissedForId] = useState<number | null>(null);
 
   const { data: job, isLoading: jobLoading, isError: jobError } = useJob(jobId);
 
@@ -856,6 +1006,8 @@ function JobEditor({ jobId, pendingLineComments, onAddLineComment, onClearLineCo
   // Review submission + line comment saving
   const submitReview   = useSubmitReview(jobId);
   const addLineComment = useAddLineComment(jobId);
+  // Cancel regeneration request — transitions *_REGENERATE_REQUESTED → *_UNDER_REVIEW
+  const cancelRegen    = useTransitionJob(jobId);
   // Manual edit mutations (legacy — kept for reference; save now uses createVersion)
   const editYAML = useEditYAMLVersion(yamlSourceId);
   const editCode = useEditCode(jobId);
@@ -1384,6 +1536,116 @@ function JobEditor({ jobId, pendingLineComments, onAddLineComment, onClearLineCo
           </HStack>
         </Flex>
       )}
+
+      {/* YAML Regeneration Requested banner — cancel puts job back to UNDER_REVIEW */}
+      {job.current_state === 'REGENERATE_REQUESTED' && showContent === 'content' && (
+        <Flex
+          align="center" justify="space-between" px={4} py="6px"
+          bg="rgba(234,179,8,0.10)" borderBottom="1px solid rgba(234,179,8,0.28)"
+          flexShrink={0} gap={3}
+        >
+          <Flex align="center" gap={2}>
+            <Icon as={FiRotateCcw as ComponentType} color="yellow.300" boxSize="13px" />
+            <Text fontSize="12px" color="yellow.200" fontWeight="medium">YAML Regeneration Requested</Text>
+            <Text fontSize="11px" color={colors.fgMuted}>
+              — reviewer requested a new version. Run the LLM to regenerate, or cancel to go back to review.
+            </Text>
+          </Flex>
+          <Button
+            size="xs" h="22px" px="10px" fontSize="11px"
+            leftIcon={<Icon as={FiXCircle as ComponentType} boxSize="11px" />}
+            colorScheme="gray" variant="outline"
+            color={colors.fgMuted}
+            borderColor="rgba(156,163,175,0.4)"
+            _hover={{ bg: 'rgba(156,163,175,0.1)', color: colors.fg }}
+            isLoading={cancelRegen.isPending}
+            onClick={() => cancelRegen.mutate({ new_state: 'UNDER_REVIEW', reason: 'Regeneration request cancelled by user' })}
+          >
+            Cancel Regeneration
+          </Button>
+        </Flex>
+      )}
+
+      {/* Code Regeneration Requested banner — cancel puts job back to CODE_UNDER_REVIEW */}
+      {job.current_state === 'CODE_REGENERATE_REQUESTED' && showContent === 'content' && (
+        <Flex
+          align="center" justify="space-between" px={4} py="6px"
+          bg="rgba(234,179,8,0.10)" borderBottom="1px solid rgba(234,179,8,0.28)"
+          flexShrink={0} gap={3}
+        >
+          <Flex align="center" gap={2}>
+            <Icon as={FiRotateCcw as ComponentType} color="yellow.300" boxSize="13px" />
+            <Text fontSize="12px" color="yellow.200" fontWeight="medium">Code Regeneration Requested</Text>
+            <Text fontSize="11px" color={colors.fgMuted}>
+              — reviewer requested new code. Run the LLM to regenerate, or cancel to go back to review.
+            </Text>
+          </Flex>
+          <Button
+            size="xs" h="22px" px="10px" fontSize="11px"
+            leftIcon={<Icon as={FiXCircle as ComponentType} boxSize="11px" />}
+            colorScheme="gray" variant="outline"
+            color={colors.fgMuted}
+            borderColor="rgba(156,163,175,0.4)"
+            _hover={{ bg: 'rgba(156,163,175,0.1)', color: colors.fg }}
+            isLoading={cancelRegen.isPending}
+            onClick={() => cancelRegen.mutate({ new_state: 'CODE_UNDER_REVIEW', reason: 'Regeneration request cancelled by user' })}
+          >
+            Cancel Regeneration
+          </Button>
+        </Flex>
+      )}
+
+      {/* Syntax Error Warning — shown when auto-fix retry still left errors */}
+      {(() => {
+        if (activeTab !== 'code') return null;
+        const errors = generatedCode?.validation_errors;
+        if (!errors || errors.length === 0) return null;
+        // Dismiss is scoped to the current code record; reset automatically on next generation
+        const isDismissed = syntaxErrorsDismissedForId === generatedCode?.id;
+        if (isDismissed) return null;
+        const toolAvailable = generatedCode?.validation_tool_available ?? false;
+        return (
+          <Box
+            px={4} py="8px"
+            bg="rgba(239,68,68,0.10)"
+            borderBottom="1px solid rgba(239,68,68,0.28)"
+            flexShrink={0}
+          >
+            <Flex align="flex-start" justify="space-between" gap={3}>
+              <Flex align="flex-start" gap={2} flex={1} direction="column">
+                <Flex align="center" gap={2}>
+                  <Icon as={FiAlertTriangle as ComponentType} color="red.400" boxSize="13px" flexShrink={0} />
+                  <Text fontSize="12px" color="red.300" fontWeight="semibold">
+                    Syntax {errors.length === 1 ? 'Error' : 'Errors'} Detected
+                    {!toolAvailable && (
+                      <Text as="span" fontWeight="normal" color="red.400" ml={1}>(heuristic check)</Text>
+                    )}
+                  </Text>
+                  <Text fontSize="11px" color={colors.fgMuted}>
+                    — The LLM auto-fix already ran once. Use <Text as="span" color="orange.300" fontWeight="medium">Edit Mode</Text> (pencil icon ↑) to correct manually.
+                  </Text>
+                </Flex>
+                <VStack align="flex-start" spacing="2px" pl={5} w="100%">
+                  {errors.map((err, i) => (
+                    <Text key={i} fontSize="11px" color="red.300" fontFamily="mono">
+                      {err}
+                    </Text>
+                  ))}
+                </VStack>
+              </Flex>
+              <IconButton
+                aria-label="Dismiss syntax errors"
+                icon={<Icon as={FiX as ComponentType} boxSize="11px" />}
+                size="xs" variant="ghost"
+                color={colors.fgMuted}
+                _hover={{ color: colors.fg }}
+                minW="20px" h="20px" flexShrink={0}
+                onClick={() => setSyntaxErrorsDismissedForId(generatedCode?.id ?? null)}
+              />
+            </Flex>
+          </Box>
+        );
+      })()}
 
       {/* Draft ribbon — visible whenever there are uncommitted changes */}
       {overrideContent !== null && showContent === 'content' && !showDiff && !showSplit && (

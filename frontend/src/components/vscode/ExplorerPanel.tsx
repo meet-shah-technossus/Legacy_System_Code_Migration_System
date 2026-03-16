@@ -49,6 +49,8 @@ export interface ExplorerPanelProps {
   activeTab: ActivityBarTab | null;
   selectedJobId: number | null;
   onSelectJob: (id: number) => void;
+  /** Filter which job types appear in Explorer/Search. Default shows all. */
+  jobTypeFilter?: 'two-step' | 'direct';
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -66,6 +68,12 @@ const STATE_DOT: Record<JobState, string> = {
   CODE_REGENERATE_REQUESTED:  '#ed64a6',
   CODE_ACCEPTED:              '#48bb78',
   COMPLETED:                  '#38a169',
+  // Direct Conversion states
+  DIRECT_CODE_GENERATED:           '#7c3aed',
+  DIRECT_CODE_UNDER_REVIEW:        '#9333ea',
+  DIRECT_CODE_REGENERATE_REQUESTED:'#f59e0b',
+  DIRECT_CODE_ACCEPTED:            '#10b981',
+  DIRECT_COMPLETED:                '#059669',
 };
 
 const LANG_EXT: Record<TargetLanguage, string> = {
@@ -91,11 +99,17 @@ function fileLabel(job: MigrationJobSummary): string {
   if (job.job_type === 'CODE_CONVERSION' && job.target_language) {
     return base + LANG_EXT[job.target_language];
   }
+  if (job.job_type === 'DIRECT_CONVERSION' && job.target_language) {
+    return base + LANG_EXT[job.target_language];
+  }
   return base + '.pick';
 }
 
 function fileColor(job: MigrationJobSummary): string {
   if (job.job_type === 'CODE_CONVERSION' && job.target_language) {
+    return LANG_COLOR[job.target_language];
+  }
+  if (job.job_type === 'DIRECT_CONVERSION' && job.target_language) {
     return LANG_COLOR[job.target_language];
   }
   return '#d4d4d4';
@@ -182,7 +196,7 @@ function JobRow({
   const isFolder = job.job_type === 'YAML_CONVERSION';
 
   // Use same FiFolder icon; indicate open state with brighter color
-  const FileIcon   = job.job_type === 'CODE_CONVERSION' ? FiCode : FiFileText;
+  const FileIcon   = (job.job_type === 'CODE_CONVERSION' || job.job_type === 'DIRECT_CONVERSION') ? FiCode : FiFileText;
   const RowIcon    = isFolder ? FiFolder : FileIcon;
   const folderColor = isFolder ? (isCollapsed ? '#c8924a' : '#e8c17a') : fileColor(job);
 
@@ -366,9 +380,10 @@ function EmptyState({ message, actionLabel, onAction }: { message: string; actio
 interface ExplorerViewProps {
   selectedJobId: number | null;
   onSelectJob: (id: number) => void;
+  jobTypeFilter?: 'two-step' | 'direct';
 }
 
-function ExplorerView({ selectedJobId, onSelectJob }: ExplorerViewProps) {
+function ExplorerView({ selectedJobId, onSelectJob, jobTypeFilter }: ExplorerViewProps) {
   const colors = useVSColors();
   const navigate = useNavigate();
   const { data: jobs = [], isLoading, refetch } = useJobs({ limit: 200 });
@@ -386,8 +401,15 @@ function ExplorerView({ selectedJobId, onSelectJob }: ExplorerViewProps) {
 
   // Split into Job 1s and Job 2s
   const { job1s, childrenByParent } = useMemo(() => {
-    const j1s = jobs.filter((j) => j.job_type === 'YAML_CONVERSION');
-    const j2s = jobs.filter((j) => j.job_type === 'CODE_CONVERSION');
+    // Apply job type filter
+    const allFiltered = jobTypeFilter === 'direct'
+      ? jobs.filter((j) => j.job_type === 'DIRECT_CONVERSION')
+      : jobTypeFilter === 'two-step'
+      ? jobs.filter((j) => j.job_type === 'YAML_CONVERSION' || j.job_type === 'CODE_CONVERSION')
+      : jobs;  // no filter = show all
+
+    const j1s = allFiltered.filter((j) => j.job_type === 'YAML_CONVERSION' || j.job_type === 'DIRECT_CONVERSION');
+    const j2s = allFiltered.filter((j) => j.job_type === 'CODE_CONVERSION');
     const map = new Map<number, MigrationJobSummary[]>();
     j2s.forEach((j) => {
       if (j.parent_job_id != null) {
@@ -399,7 +421,7 @@ function ExplorerView({ selectedJobId, onSelectJob }: ExplorerViewProps) {
     // Orphan Job 2s (no parent in list) — treat as top-level
     const orphanJ2s = j2s.filter((j) => j.parent_job_id == null || !j1s.find((p) => p.id === j.parent_job_id));
     return { job1s: [...j1s, ...orphanJ2s], childrenByParent: map };
-  }, [jobs]);
+  }, [jobs, jobTypeFilter]);
 
   // Apply quick filter
   const filtered = useMemo(() => {
@@ -488,7 +510,14 @@ function ExplorerView({ selectedJobId, onSelectJob }: ExplorerViewProps) {
                 isSelected={selectedJobId === job.id}
                 hasChildren={children.length > 0 && !quickFilter}
                 isCollapsed={collapsed.has(job.id)}
-                onSelect={() => onSelectJob(job.id)}
+                onSelect={() => {
+                  if (job.job_type === 'DIRECT_CONVERSION' && jobTypeFilter !== 'direct') {
+                    // Navigate to Direct Studio only when we're NOT already inside it
+                    navigate(`/direct-studio/${job.id}`);
+                  } else {
+                    onSelectJob(job.id);
+                  }
+                }}
                 onToggleCollapse={() => toggleCollapse(job.id)}
                 onDelete={() => deleteJob(job.id)}
               />
@@ -505,10 +534,12 @@ function ExplorerView({ selectedJobId, onSelectJob }: ExplorerViewProps) {
 interface SearchViewProps {
   selectedJobId: number | null;
   onSelectJob: (id: number) => void;
+  jobTypeFilter?: 'two-step' | 'direct';
 }
 
-function SearchView({ selectedJobId, onSelectJob }: SearchViewProps) {
+function SearchView({ selectedJobId, onSelectJob, jobTypeFilter }: SearchViewProps) {
   const colors = useVSColors();
+  const navigate = useNavigate();
   const [query, setQuery] = useState('');
   const { data: jobs = [], isLoading } = useJobs({ limit: 200 });
   const { mutate: deleteJob } = useDeleteJob();
@@ -516,13 +547,18 @@ function SearchView({ selectedJobId, onSelectJob }: SearchViewProps) {
   const results = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return [];
-    return jobs.filter(
+    const filtered = jobTypeFilter === 'direct'
+      ? jobs.filter((j) => j.job_type === 'DIRECT_CONVERSION')
+      : jobTypeFilter === 'two-step'
+      ? jobs.filter((j) => j.job_type === 'YAML_CONVERSION' || j.job_type === 'CODE_CONVERSION')
+      : jobs;
+    return filtered.filter(
       (j) =>
         (j.job_name ?? '').toLowerCase().includes(q) ||
         (j.source_filename ?? '').toLowerCase().includes(q) ||
         j.current_state.toLowerCase().includes(q),
     );
-  }, [jobs, query]);
+  }, [jobs, query, jobTypeFilter]);
 
   return (
     <>
@@ -573,7 +609,13 @@ function SearchView({ selectedJobId, onSelectJob }: SearchViewProps) {
               job={job}
               depth={0}
               isSelected={selectedJobId === job.id}
-              onSelect={() => onSelectJob(job.id)}
+              onSelect={() => {
+                if (job.job_type === 'DIRECT_CONVERSION' && jobTypeFilter !== 'direct') {
+                  navigate(`/direct-studio/${job.id}`);
+                } else {
+                  onSelectJob(job.id);
+                }
+              }}
               onDelete={() => deleteJob(job.id)}
             />
           ))
@@ -789,17 +831,17 @@ function QueueView({ selectedJobId, onSelectJob }: QueueViewProps) {
  * VS Code Explorer sidebar — switches between Explorer / Search / Queue views
  * based on the active Activity Bar tab.
  */
-export default function ExplorerPanel({ activeTab, selectedJobId, onSelectJob }: ExplorerPanelProps) {
+export default function ExplorerPanel({ activeTab, selectedJobId, onSelectJob, jobTypeFilter }: ExplorerPanelProps) {
   const colors = useVSColors();
   return (
     <Flex direction="column" h="100%" overflow="hidden" bg={colors.sidebar}>
       {activeTab === 'queue' ? (
         <QueueView selectedJobId={selectedJobId} onSelectJob={onSelectJob} />
       ) : activeTab === 'search' ? (
-        <SearchView selectedJobId={selectedJobId} onSelectJob={onSelectJob} />
+        <SearchView selectedJobId={selectedJobId} onSelectJob={onSelectJob} jobTypeFilter={jobTypeFilter} />
       ) : (
         // Default: 'explorer' or null
-        <ExplorerView selectedJobId={selectedJobId} onSelectJob={onSelectJob} />
+        <ExplorerView selectedJobId={selectedJobId} onSelectJob={onSelectJob} jobTypeFilter={jobTypeFilter} />
       )}
     </Flex>
   );

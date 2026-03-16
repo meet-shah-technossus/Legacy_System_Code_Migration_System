@@ -42,10 +42,19 @@ export type JobState =
   | 'CODE_UNDER_REVIEW'
   | 'CODE_REGENERATE_REQUESTED'
   | 'CODE_ACCEPTED'
-  | 'COMPLETED';
+  | 'COMPLETED'
+  // Direct Conversion states
+  | 'DIRECT_CODE_GENERATED'
+  | 'DIRECT_CODE_UNDER_REVIEW'
+  | 'DIRECT_CODE_REGENERATE_REQUESTED'
+  | 'DIRECT_CODE_ACCEPTED'
+  | 'DIRECT_COMPLETED';
 
-/** Whether a job is a YAML conversion (Job 1) or code conversion (Job 2) */
-export type JobType = 'YAML_CONVERSION' | 'CODE_CONVERSION';
+/** Whether a job is a YAML conversion (Job 1), code conversion (Job 2), or direct conversion */
+export type JobType = 'YAML_CONVERSION' | 'CODE_CONVERSION' | 'DIRECT_CONVERSION';
+
+/** LLM provider for code / YAML generation */
+export type LLMProvider = 'OPENAI' | 'ANTHROPIC';
 
 export type TargetLanguage = 'PYTHON' | 'TYPESCRIPT' | 'JAVASCRIPT' | 'JAVA' | 'CSHARP';
 
@@ -65,6 +74,11 @@ export interface MigrationJob {
   updated_at: string;
   yaml_versions_count: number;
   reviews_count: number;
+  // LLM provider/model tracking (populated for DIRECT_CONVERSION jobs)
+  yaml_llm_provider?: LLMProvider | null;
+  yaml_llm_model?: string | null;
+  code_llm_provider?: LLMProvider | null;
+  code_llm_model?: string | null;
 }
 
 export interface MigrationJobWithSource extends MigrationJob {
@@ -93,6 +107,8 @@ export interface JobCreate {
   /** @deprecated Will be removed in Phase 5. Send via Job2Create instead. */
   target_language?: TargetLanguage;
   created_by?: string;
+  /** Preferred LLM provider for the YAML generation step. */
+  yaml_llm_provider?: LLMProvider;
 }
 
 /** Create a Job 2 (YAML → Target Language) from a queued Job 1. */
@@ -101,6 +117,18 @@ export interface Job2Create {
   target_language: TargetLanguage;
   job_name?: string;
   description?: string;
+  created_by?: string;
+}
+
+/** Create a Direct Conversion job (Pick Basic → Target Language in one LLM call). */
+export interface DirectJobCreate {
+  original_source_code: string;
+  target_language: TargetLanguage;
+  llm_provider?: LLMProvider;
+  job_name?: string;
+  description?: string;
+  source_filename?: string;
+  pick_basic_version?: string;
   created_by?: string;
 }
 
@@ -135,7 +163,10 @@ export interface PendingLineComment {
   /** Browser-generated UUID — never persisted as-is */
   id: string;
   lineNumber: number;
+  /** The user's typed annotation for this line */
   text: string;
+  /** The actual source code at this line number, captured from the Monaco editor */
+  codeLine?: string;
   codeType: 'yaml' | 'generated_code';
 }
 
@@ -152,6 +183,10 @@ export interface QueuedJob {
 export interface JobUpdate {
   job_name?: string;
   description?: string;
+  /** Pre-set the preferred LLM provider for YAML generation on this job. */
+  yaml_llm_provider?: LLMProvider;
+  /** Pre-set the preferred LLM provider for code generation on this job. */
+  code_llm_provider?: LLMProvider;
 }
 
 export interface JobStateTransition {
@@ -216,6 +251,7 @@ export interface YAMLVersionSummary {
 export interface YAMLGenerationRequest {
   performed_by: string;
   force_regenerate?: boolean;
+  llm_provider?: string;
 }
 
 export interface YAMLApprovalRequest {
@@ -227,6 +263,8 @@ export interface YAMLRegenerationRequest {
   performed_by: string;
   include_previous_comments?: boolean;
   additional_instructions?: string;
+  /** LLM provider override. Omit to re-use the provider from the original generation. */
+  llm_provider?: LLMProvider;
 }
 
 export interface YAMLStatistics {
@@ -251,6 +289,9 @@ export interface GeneratedCode {
   estimated_lines_of_code: number | null;
   generated_at: string;
   is_accepted: boolean;
+  // Phase 2 — syntax validation (auto-fix already ran; these are the remaining errors, if any)
+  validation_tool_available: boolean | null;
+  validation_errors: string[] | null;
   // Phase 3
   version_number: number | null;
   is_current: boolean | null;
@@ -307,6 +348,7 @@ export interface CodeGenerationRequest {
   target_language: TargetLanguage;
   performed_by: string;
   use_llm?: boolean;
+  llm_provider?: string;
 }
 
 // ─── Reviews ─────────────────────────────────────────────────────────────────

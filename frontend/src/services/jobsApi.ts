@@ -5,6 +5,7 @@ import type {
   MigrationJobWithSource,
   JobCreate,
   Job2Create,
+  DirectJobCreate,
   JobUpdate,
   JobStateTransition,
   JobStatistics,
@@ -66,6 +67,10 @@ export const jobsApi = {
   /** Create a Job 2 (YAML → Target Language) from a queued Job 1 */
   createJob2: (data: Job2Create): Promise<MigrationJob> =>
     api.post<MigrationJob>('/jobs/job2', data).then((r) => r.data),
+
+  /** Create a Direct Conversion job (Pick Basic → Target Language, no YAML step) */
+  createDirect: (data: DirectJobCreate): Promise<MigrationJob> =>
+    api.post<MigrationJob>('/jobs/direct', data).then((r) => r.data),
 
   /** Get the parent Job 1 for a given Job 2 */
   getParentJob: (jobId: number): Promise<MigrationJob> =>

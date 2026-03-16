@@ -82,6 +82,12 @@ const STATE_COLORS: Record<string, string> = {
   APPROVED_WITH_COMMENTS: '#48BB78',
   CODE_GENERATED: '#B794F4',
   COMPLETED: '#38A169',
+  // Direct Conversion states
+  DIRECT_CODE_GENERATED: '#7c3aed',
+  DIRECT_CODE_UNDER_REVIEW: '#9333ea',
+  DIRECT_CODE_REGENERATE_REQUESTED: '#f59e0b',
+  DIRECT_CODE_ACCEPTED: '#10b981',
+  DIRECT_COMPLETED: '#059669',
 };
 
 // ─── Stat card ────────────────────────────────────────────────────────────────
@@ -449,6 +455,23 @@ export default function AnalyticsPage() {
 
   const totalErrors = summary?.errors.total ?? 0;
 
+  // Direct Conversion stats (from by_job_type and by_state)
+  const directJobs = (jobStats?.by_job_type as Record<string, number> | undefined)?.direct_conversion ?? 0;
+  const directCompleted = (jobStats?.by_state?.DIRECT_COMPLETED as number) ?? 0;
+  const directActive = (
+    ((jobStats?.by_state?.DIRECT_CODE_GENERATED as number) ?? 0) +
+    ((jobStats?.by_state?.DIRECT_CODE_UNDER_REVIEW as number) ?? 0) +
+    ((jobStats?.by_state?.DIRECT_CODE_REGENERATE_REQUESTED as number) ?? 0) +
+    ((jobStats?.by_state?.DIRECT_CODE_ACCEPTED as number) ?? 0)
+  );
+  const directCompletionRate = directJobs > 0
+    ? `${Math.round((directCompleted / directJobs) * 100)}%`
+    : '—';
+  const yamlPipelineJobs = (
+    (((jobStats?.by_job_type as Record<string, number> | undefined)?.job1_yaml_conversion) ?? 0) +
+    (((jobStats?.by_job_type as Record<string, number> | undefined)?.job2_code_conversion) ?? 0)
+  );
+
   const bg = useColorModeValue('white', 'gray.800');
   const borderColor = useColorModeValue('gray.200', 'gray.700');
 
@@ -635,7 +658,7 @@ export default function AnalyticsPage() {
       </Grid>
 
       {/* ── Operations comparison ────────────────────────────── */}
-      <Grid templateColumns={{ base: '1fr', lg: '1fr 1fr' }} gap={5}>
+      <Grid templateColumns={{ base: '1fr', lg: '1fr 1fr' }} gap={5} mb={5}>
         <SectionCard
           title="Operations Comparison"
           subtitle={`Success vs failure — last ${hours} hours`}
@@ -703,6 +726,90 @@ export default function AnalyticsPage() {
                     <Text fontSize="sm" color="gray.400">{label}</Text>
                   </HStack>
                   <Text fontSize="sm" fontWeight="bold">{value}</Text>
+                </Flex>
+              ))}
+            </VStack>
+          )}
+        </SectionCard>
+      </Grid>
+
+      {/* ── Architecture Overview ────────────────────────────── */}
+      <Grid templateColumns={{ base: '1fr', lg: '1fr 1fr' }} gap={5}>
+        {/* Pipeline split */}
+        <SectionCard
+          title="By Architecture"
+          subtitle="All-time job type breakdown"
+          isLoading={statsLoading}
+        >
+          {!jobStats ? null : (
+            <>
+              <Grid templateColumns="repeat(3, 1fr)" gap={4} mb={4}>
+                <Box textAlign="center">
+                  <Text fontSize="xs" color="gray.500" mb={1}>Two-Step Pipeline</Text>
+                  <Text fontSize="2xl" fontWeight="bold" color="cyan.400">{yamlPipelineJobs}</Text>
+                  <Text fontSize="xs" color="gray.500">YAML + Code jobs</Text>
+                </Box>
+                <Box textAlign="center">
+                  <Text fontSize="xs" color="gray.500" mb={1}>Direct Conversion</Text>
+                  <Text fontSize="2xl" fontWeight="bold" color="purple.400">{directJobs}</Text>
+                  <Text fontSize="xs" color="gray.500">{directCompletionRate} completion</Text>
+                </Box>
+                <Box textAlign="center">
+                  <Text fontSize="xs" color="gray.500" mb={1}>Direct Active</Text>
+                  <Text fontSize="2xl" fontWeight="bold" color="orange.400">{directActive}</Text>
+                  <Text fontSize="xs" color="gray.500">in progress</Text>
+                </Box>
+              </Grid>
+              <ResponsiveContainer width="100%" height={160}>
+                <BarChart
+                  data={[
+                    { name: 'Two-Step Pipeline', count: yamlPipelineJobs, fill: '#0BC5EA' },
+                    { name: 'Direct Conversion', count: directJobs, fill: '#7c3aed' },
+                  ]}
+                  barSize={40}
+                >
+                  <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
+                  <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+                  <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+                  <ReTooltip
+                    contentStyle={{ background: '#2D3748', border: 'none', borderRadius: 8 }}
+                    labelStyle={{ color: '#fff' }}
+                    itemStyle={{ color: '#E2E8F0' }}
+                  />
+                  <Bar dataKey="count" radius={[4, 4, 0, 0]}>
+                    {[
+                      <Cell key="two-step" fill="#0BC5EA" />,
+                      <Cell key="direct" fill="#7c3aed" />,
+                    ]}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </>
+          )}
+        </SectionCard>
+
+        {/* Direct Conversion detail */}
+        <SectionCard
+          title="Direct Conversion Detail"
+          subtitle="State breakdown for direct jobs"
+          isLoading={statsLoading}
+        >
+          {directJobs === 0 ? (
+            <Flex h="180px" align="center" justify="center" direction="column" gap={2}>
+              <Icon as={FiZap} boxSize={10} color="gray.500" />
+              <Text color="gray.400" fontSize="sm">No direct conversion jobs yet</Text>
+            </Flex>
+          ) : (
+            <VStack align="stretch" spacing={3} divider={<Divider />}>
+              {[
+                { label: 'Total Direct Jobs', value: directJobs, color: 'blue.400' },
+                { label: 'Completed', value: directCompleted, color: 'green.400' },
+                { label: 'In Progress', value: directActive, color: 'orange.400' },
+                { label: 'Completion Rate', value: directCompletionRate, color: 'purple.400' },
+              ].map(({ label, value, color }) => (
+                <Flex key={label} justify="space-between" align="center">
+                  <Text fontSize="sm" color="gray.400">{label}</Text>
+                  <Text fontSize="sm" fontWeight="bold" color={color}>{value}</Text>
                 </Flex>
               ))}
             </VStack>

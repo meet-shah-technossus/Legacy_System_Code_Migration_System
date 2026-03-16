@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Alert,
@@ -74,15 +74,15 @@ import {
 import { useRef } from 'react';
 import toast from 'react-hot-toast';
 
-import { useJob, useJobWithSource, useAllowedTransitions, useTransitionJob, useDeleteJob } from '../hooks/useJobs';
+import { useJob, useJobWithSource, useAllowedTransitions, useTransitionJob, useDeleteJob, useUpdateJob } from '../hooks/useJobs';
 import { useYAMLVersions, useGenerateYAML, useApproveYAML, useRegenerateYAML } from '../hooks/useYaml';
-import { useGeneratedCode, useGenerateCode, useCodeHistory, useCodeVersions, useCodeVersion, useRestoreCodeVersion } from '../hooks/useCode';
+import { useGeneratedCode, useGenerateCode, useCodeHistory, useCodeVersions, useCodeVersion, useRestoreCodeVersion, useDirectRegenerateCode } from '../hooks/useCode';
 import { yamlApi } from '../services/yamlApi';
 import { codeApi } from '../services/codeApi';
 import { usePrefsStore } from '../store/prefsStore';
 import { stateLabel, stateColorScheme, languageLabel, formatDateTime, formatDate, timeAgo, formatDuration } from '../utils/format';
 import { useAuthStore } from '../store/authStore';
-import type { JobState, YAMLVersionSummary, TargetLanguage, JobType } from '../types';
+import type { JobState, YAMLVersionSummary, TargetLanguage, JobType, LLMProvider } from '../types';
 import GenerationProcessingOverlay from '../components/vscode/GenerationProcessingOverlay';
 
 // ─── Workflow Steps ───────────────────────────────────────────────────────────
@@ -124,15 +124,45 @@ const JOB2_STATE_STEP: Partial<Record<JobState, number>> = {
   COMPLETED: 4,
 };
 
+// Direct Conversion (DIRECT_CONVERSION): Pick Basic → Code directly
+const DIRECT_STEPS: { state: JobState; label: string }[] = [
+  { state: 'CREATED', label: 'Created' },
+  { state: 'DIRECT_CODE_GENERATED', label: 'Code Ready' },
+  { state: 'DIRECT_CODE_UNDER_REVIEW', label: 'Under Review' },
+  { state: 'DIRECT_CODE_ACCEPTED', label: 'Accepted' },
+  { state: 'DIRECT_COMPLETED', label: 'Completed' },
+];
+
+const DIRECT_STATE_STEP: Partial<Record<JobState, number>> = {
+  CREATED: 0,
+  DIRECT_CODE_GENERATED: 1,
+  DIRECT_CODE_UNDER_REVIEW: 2,
+  DIRECT_CODE_REGENERATE_REQUESTED: 2,
+  DIRECT_CODE_ACCEPTED: 3,
+  DIRECT_COMPLETED: 4,
+};
+
 function WorkflowStepper({ currentState, jobType }: { currentState: JobState; jobType: JobType }) {
-  const steps = jobType === 'CODE_CONVERSION' ? JOB2_STEPS : JOB1_STEPS;
-  const stateStep = jobType === 'CODE_CONVERSION' ? JOB2_STATE_STEP : JOB1_STATE_STEP;
+  const steps = jobType === 'DIRECT_CONVERSION'
+    ? DIRECT_STEPS
+    : jobType === 'CODE_CONVERSION'
+    ? JOB2_STEPS
+    : JOB1_STEPS;
+  const stateStep = jobType === 'DIRECT_CONVERSION'
+    ? DIRECT_STATE_STEP
+    : jobType === 'CODE_CONVERSION'
+    ? JOB2_STATE_STEP
+    : JOB1_STATE_STEP;
   const activeStep = stateStep[currentState] ?? 0;
   const trackBg = useColorModeValue('gray.200', 'gray.700');
   const doneBg = 'brand.400';
   const circleBorder = useColorModeValue('gray.300', 'gray.600');
 
-  const isRegenState = currentState === 'REGENERATE_REQUESTED' || currentState === 'CODE_REGENERATE_REQUESTED';
+  const isRegenState = (
+    currentState === 'REGENERATE_REQUESTED' ||
+    currentState === 'CODE_REGENERATE_REQUESTED' ||
+    currentState === 'DIRECT_CODE_REGENERATE_REQUESTED'
+  );
 
   return (
     <Flex align="center" w="full" gap={0}>
@@ -270,6 +300,8 @@ function YamlVersionsPanel({ jobId, currentState }: { jobId: number; currentStat
 
   const generateYAML = useGenerateYAML(jobId);
   const regenerateYAML = useRegenerateYAML(jobId);
+  const { data: jobForProvider } = useJob(jobId);
+  const updateJobMeta = useUpdateJob(jobId);
 
   const [selectedVersion, setSelectedVersion] = useState<YAMLVersionSummary | null>(null);
   const [yamlContent, setYamlContent] = useState<string>('');
@@ -310,6 +342,24 @@ function YamlVersionsPanel({ jobId, currentState }: { jobId: number; currentStat
 
   const canGenerate = currentState === 'CREATED';
   const canRegenerate = currentState === 'REGENERATE_REQUESTED';
+  const [regenYAMLProvider, setRegenYAMLProvider] = useState<LLMProvider>('OPENAI');
+  const [generateYAMLProvider, setGenerateYAMLProvider] = useState<LLMProvider>('OPENAI');
+
+  // Sync provider selectors with the job's stored preference when the job record updates
+  useEffect(() => {
+    const stored = jobForProvider?.yaml_llm_provider as LLMProvider | undefined;
+    if (stored) {
+      setRegenYAMLProvider(stored);
+      setGenerateYAMLProvider(stored);
+    }
+  }, [jobForProvider?.yaml_llm_provider]);
+
+  // Persist the chosen provider to the job record and update both selectors consistently
+  const handleYAMLProviderChange = (provider: LLMProvider) => {
+    setGenerateYAMLProvider(provider);
+    setRegenYAMLProvider(provider);
+    updateJobMeta.mutate({ yaml_llm_provider: provider });
+  };
 
   return (
     <Box position="relative">
@@ -320,33 +370,54 @@ function YamlVersionsPanel({ jobId, currentState }: { jobId: number; currentStat
       {/* Action buttons */}
       <HStack mb={4} spacing={3}>
         {canGenerate && (
-          <Button
-            leftIcon={<FiZap />}
-            colorScheme="brand"
-            size="sm"
-            isLoading={generateYAML.isPending}
-            loadingText="Generating…"
-            onClick={() => generateYAML.mutate({ performed_by: username, force_regenerate: false })}
-          >
-            Generate YAML
-          </Button>
+          <HStack spacing={2}>
+            <Select
+              size="sm" w="130px" fontSize="xs"
+              value={generateYAMLProvider}
+              onChange={(e) => handleYAMLProviderChange(e.target.value as LLMProvider)}
+            >
+              <option value="OPENAI">OpenAI</option>
+              <option value="ANTHROPIC">Anthropic</option>
+            </Select>
+            <Button
+              leftIcon={<FiZap />}
+              colorScheme="brand"
+              size="sm"
+              isLoading={generateYAML.isPending}
+              loadingText="Generating…"
+              onClick={() => generateYAML.mutate({ performed_by: username, force_regenerate: false, llm_provider: generateYAMLProvider })}
+            >
+              Generate YAML
+            </Button>
+          </HStack>
         )}
         {canRegenerate && (
-          <Button
-            leftIcon={<FiRefreshCw />}
-            colorScheme="yellow"
-            size="sm"
-            isLoading={regenerateYAML.isPending}
-            loadingText="Regenerating…"
-            onClick={() =>
-              regenerateYAML.mutate({
-                performed_by: username,
-                include_previous_comments: true,
-              })
-            }
-          >
-            Regenerate YAML
-          </Button>
+          <HStack spacing={2}>
+            <Select
+              size="sm" w="130px" fontSize="xs"
+              value={regenYAMLProvider}
+              onChange={(e) => handleYAMLProviderChange(e.target.value as LLMProvider)}
+            >
+              <option value="OPENAI">OpenAI</option>
+              <option value="ANTHROPIC">Anthropic</option>
+            </Select>
+            <Button
+              leftIcon={<FiRefreshCw />}
+              colorScheme="yellow"
+              size="sm"
+              isLoading={regenerateYAML.isPending}
+              loadingText="Regenerating…"
+              onClick={() =>
+                regenerateYAML.mutate({
+                  performed_by: username,
+                  include_previous_comments: true,
+                  llm_provider: regenYAMLProvider,
+                })
+              }
+            >
+              Regenerate YAML
+            </Button>
+          </HStack>
         )}
         {selectedVersion && selectedVersion.is_valid && !selectedVersion.is_approved && (
           <Button
@@ -520,6 +591,7 @@ function YamlVersionsPanel({ jobId, currentState }: { jobId: number; currentStat
 
 function OverviewPanel({ jobId }: { jobId: number }) {
   const { data: job, isLoading } = useJob(jobId);
+  const updateJob = useUpdateJob(jobId);
   const navigate = useNavigate();
   const bg = useColorModeValue('white', 'gray.800');
   const borderColor = useColorModeValue('gray.200', 'gray.700');
@@ -530,7 +602,11 @@ function OverviewPanel({ jobId }: { jobId: number }) {
 
   const fields: { label: string; value: string | null | number | undefined }[] = [
     { label: 'Job ID', value: `#${job.id}` },
-    { label: 'Job Type', value: job.job_type === 'CODE_CONVERSION' ? 'Job 2 — Code Conversion' : 'Job 1 — YAML Conversion' },
+    { label: 'Job Type', value:
+        job.job_type === 'CODE_CONVERSION' ? 'Job 2 — Code Conversion' :
+        job.job_type === 'DIRECT_CONVERSION' ? 'Direct Conversion' :
+        'Job 1 — YAML Conversion'
+    },
     { label: 'Target Language', value: languageLabel(job.target_language) },
     { label: 'State', value: stateLabel(job.current_state) },
     { label: 'Source File', value: job.source_filename },
@@ -591,15 +667,16 @@ function OverviewPanel({ jobId }: { jobId: number }) {
               Counts
             </Heading>
             <Grid templateColumns="1fr 1fr" gap={4}>
-              {[
-                { label: 'YAML Versions', value: job.yaml_versions_count },
-                { label: 'Reviews', value: job.reviews_count },
-              ].map(({ label, value }) => (
-                <Stat key={label}>
-                  <StatLabel fontSize="xs" color="gray.500">{label}</StatLabel>
-                  <StatNumber fontSize="2xl">{value}</StatNumber>
+              {job.job_type !== 'DIRECT_CONVERSION' && (
+                <Stat>
+                  <StatLabel fontSize="xs" color="gray.500">YAML Versions</StatLabel>
+                  <StatNumber fontSize="2xl">{job.yaml_versions_count}</StatNumber>
                 </Stat>
-              ))}
+              )}
+              <Stat>
+                <StatLabel fontSize="xs" color="gray.500">Reviews</StatLabel>
+                <StatNumber fontSize="2xl">{job.reviews_count}</StatNumber>
+              </Stat>
             </Grid>
           </Box>
 
@@ -653,6 +730,80 @@ function OverviewPanel({ jobId }: { jobId: number }) {
                 Code accepted — migration pipeline complete
               </Text>
             )}
+            {job.current_state === 'DIRECT_CODE_UNDER_REVIEW' && (
+              <Text fontSize="xs" color="purple.400" mt={2}>
+                Awaiting reviewer acceptance of directly converted code
+              </Text>
+            )}
+            {job.current_state === 'DIRECT_CODE_REGENERATE_REQUESTED' && (
+              <Text fontSize="xs" color="yellow.400" mt={2}>
+                Awaiting direct code regeneration with reviewer feedback
+              </Text>
+            )}
+            {job.current_state === 'DIRECT_CODE_ACCEPTED' && (
+              <Text fontSize="xs" color="teal.400" mt={2}>
+                Code accepted — direct conversion complete
+              </Text>
+            )}
+            {job.current_state === 'DIRECT_COMPLETED' && (
+              <Text fontSize="xs" color="green.400" mt={2}>
+                Direct conversion completed successfully
+              </Text>
+            )}
+          </Box>
+
+          {/* AI Provider card — switch the preferred LLM provider for this job */}
+          <Box bg={bg} border="1px solid" borderColor={borderColor} borderRadius="xl" p={5}>
+            <Heading size="sm" mb={3} color="gray.400" textTransform="uppercase" letterSpacing="wider">
+              AI Provider
+            </Heading>
+            <VStack align="stretch" spacing={3}>
+              {job.job_type === 'YAML_CONVERSION' && (
+                <Flex justify="space-between" align="center" gap={3}>
+                  <VStack align="start" spacing={0}>
+                    <Text fontSize="sm" fontWeight="medium">YAML Generation</Text>
+                    {job.yaml_llm_model && (
+                      <Text fontSize="xs" color="gray.500" fontFamily="mono" isTruncated maxW="110px">
+                        {job.yaml_llm_model}
+                      </Text>
+                    )}
+                  </VStack>
+                  <Select
+                    size="sm" w="130px" fontSize="xs"
+                    value={job.yaml_llm_provider ?? 'OPENAI'}
+                    onChange={(e) => updateJob.mutate({ yaml_llm_provider: e.target.value as LLMProvider })}
+                    isDisabled={updateJob.isPending}
+                  >
+                    <option value="OPENAI">OpenAI</option>
+                    <option value="ANTHROPIC">Anthropic</option>
+                  </Select>
+                </Flex>
+              )}
+              {(job.job_type === 'CODE_CONVERSION' || job.job_type === 'DIRECT_CONVERSION') && (
+                <Flex justify="space-between" align="center" gap={3}>
+                  <VStack align="start" spacing={0}>
+                    <Text fontSize="sm" fontWeight="medium">Code Generation</Text>
+                    {job.code_llm_model && (
+                      <Text fontSize="xs" color="gray.500" fontFamily="mono" isTruncated maxW="110px">
+                        {job.code_llm_model}
+                      </Text>
+                    )}
+                  </VStack>
+                  <Select
+                    size="sm" w="130px" fontSize="xs"
+                    value={job.code_llm_provider ?? 'OPENAI'}
+                    onChange={(e) => updateJob.mutate({ code_llm_provider: e.target.value as LLMProvider })}
+                    isDisabled={updateJob.isPending}
+                  >
+                    <option value="OPENAI">OpenAI</option>
+                    <option value="ANTHROPIC">Anthropic</option>
+                  </Select>
+                </Flex>
+              )}
+              <Text fontSize="xs" color="gray.500">
+                Sets the preferred provider for future generation attempts on this job.
+              </Text>
+            </VStack>
           </Box>
         </VStack>
       </GridItem>
@@ -676,6 +827,7 @@ function CodeGenModal({
   const { user } = useAuthStore();
   const [language, setLanguage] = useState<TargetLanguage>(defaultLanguage);
   const [useLLM, setUseLLM] = useState(true);
+  const [codeGenProvider, setCodeGenProvider] = useState<LLMProvider>('OPENAI');
   const toast = useToast();
   const generateCode = useGenerateCode(jobId);
 
@@ -693,6 +845,7 @@ function CodeGenModal({
         target_language: language,
         performed_by: user?.username ?? 'system',
         use_llm: useLLM,
+        llm_provider: codeGenProvider,
       });
       onClose();
     } catch {
@@ -742,6 +895,18 @@ function CodeGenModal({
                 />
               </Flex>
             </FormControl>
+            {useLLM && (
+              <FormControl>
+                <FormLabel fontSize="sm">LLM Provider</FormLabel>
+                <Select
+                  value={codeGenProvider}
+                  onChange={(e) => setCodeGenProvider(e.target.value as LLMProvider)}
+                >
+                  <option value="OPENAI">OpenAI</option>
+                  <option value="ANTHROPIC">Anthropic</option>
+                </Select>
+              </FormControl>
+            )}
           </VStack>
         </ModalBody>
         <ModalFooter gap={2}>
@@ -754,6 +919,109 @@ function CodeGenModal({
             onClick={handleGenerate}
           >
             Generate
+          </Button>
+        </ModalFooter>
+      </ModalContent>
+    </Modal>
+  );
+}
+
+// ─── Direct Code Regeneration Modal ──────────────────────────────────────────
+
+function DirectCodeRegenModal({
+  jobId,
+  defaultLanguage,
+  isOpen,
+  onClose,
+}: {
+  jobId: number;
+  defaultLanguage: TargetLanguage;
+  isOpen: boolean;
+  onClose: () => void;
+}) {
+  const { user } = useAuthStore();
+  const [language, setLanguage] = useState<TargetLanguage>(defaultLanguage);
+  const [directRegenProvider, setDirectRegenProvider] = useState<LLMProvider>('OPENAI');
+  const directRegenerate = useDirectRegenerateCode(jobId);
+
+  const LANGUAGES: { value: TargetLanguage; label: string }[] = [
+    { value: 'PYTHON', label: 'Python' },
+    { value: 'TYPESCRIPT', label: 'TypeScript' },
+    { value: 'JAVASCRIPT', label: 'JavaScript' },
+    { value: 'JAVA', label: 'Java' },
+    { value: 'CSHARP', label: 'C#' },
+  ];
+
+  const handleRegenerate = async () => {
+    try {
+      await directRegenerate.mutateAsync({
+        target_language: language,
+        performed_by: user?.username ?? 'system',
+        llm_provider: directRegenProvider,
+      });
+      onClose();
+    } catch {
+      // error already toasted by the mutation
+    }
+  };
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} isCentered>
+      <ModalOverlay bg="blackAlpha.600" backdropFilter="blur(4px)" />
+      <ModalContent position="relative">
+        {directRegenerate.isPending && (
+          <GenerationProcessingOverlay type="code" language={language} />
+        )}
+        <ModalHeader>
+          <HStack spacing={2}>
+            <Icon as={FiRefreshCw} color="yellow.400" />
+            <Text>Regenerate Direct Code</Text>
+          </HStack>
+        </ModalHeader>
+        <ModalCloseButton />
+        <ModalBody>
+          <VStack spacing={4} align="stretch">
+            <Alert status="warning" borderRadius="md">
+              <AlertIcon />
+              <AlertDescription fontSize="sm">
+                The reviewer rejected the previous version. The LLM will produce a new version incorporating the review feedback.
+              </AlertDescription>
+            </Alert>
+            <FormControl>
+              <FormLabel fontSize="sm">Target Language</FormLabel>
+              <Select
+                value={language}
+                onChange={(e) => setLanguage(e.target.value as TargetLanguage)}
+              >
+                {LANGUAGES.map((l) => (
+                  <option key={l.value} value={l.value}>{l.label}</option>
+                ))}
+              </Select>
+            </FormControl>
+            <FormControl>
+              <FormLabel fontSize="sm">LLM Provider</FormLabel>
+              <Select
+                value={directRegenProvider}
+                onChange={(e) => setDirectRegenProvider(e.target.value as LLMProvider)}
+              >
+                <option value="OPENAI">OpenAI</option>
+                <option value="ANTHROPIC">Anthropic</option>
+              </Select>
+            </FormControl>
+          </VStack>
+        </ModalBody>
+        <ModalFooter gap={2}>
+          <Button variant="ghost" onClick={onClose} isDisabled={directRegenerate.isPending}>
+            Cancel
+          </Button>
+          <Button
+            colorScheme="yellow"
+            leftIcon={<Icon as={FiRefreshCw} />}
+            isLoading={directRegenerate.isPending}
+            loadingText="Regenerating…"
+            onClick={handleRegenerate}
+          >
+            Regenerate Code
           </Button>
         </ModalFooter>
       </ModalContent>
@@ -788,7 +1056,12 @@ function GeneratedCodePanel({ jobId, currentState }: { jobId: number; currentSta
     currentState === 'CODE_UNDER_REVIEW' ||
     currentState === 'CODE_REGENERATE_REQUESTED' ||
     currentState === 'CODE_ACCEPTED' ||
-    currentState === 'COMPLETED';
+    currentState === 'COMPLETED' ||
+    currentState === 'DIRECT_CODE_GENERATED' ||
+    currentState === 'DIRECT_CODE_UNDER_REVIEW' ||
+    currentState === 'DIRECT_CODE_REGENERATE_REQUESTED' ||
+    currentState === 'DIRECT_CODE_ACCEPTED' ||
+    currentState === 'DIRECT_COMPLETED';
 
   const handleCopy = () => {
     if (!detail?.code_content) return;
@@ -808,7 +1081,7 @@ function GeneratedCodePanel({ jobId, currentState }: { jobId: number; currentSta
         <Icon as={FiCode} boxSize={12} color="gray.500" />
         <Text fontWeight="semibold" color="gray.400">No code generated yet</Text>
         <Text fontSize="sm" color="gray.500" textAlign="center" maxW="400px">
-          Code will appear here once the YAML has been approved and code generation is triggered.
+          Use the Direct Studio to generate code directly from the Pick Basic source.
         </Text>
       </Flex>
     );
@@ -1096,6 +1369,10 @@ const ACTION_LABELS: Partial<Record<JobState, { label: string; colorScheme: stri
   CODE_GENERATED: { label: 'Start Code Review', colorScheme: 'purple', icon: FiCode },
   CODE_UNDER_REVIEW: { label: 'Code Review Actions…', colorScheme: 'blue' },
   CODE_REGENERATE_REQUESTED: { label: 'Regenerate Code', colorScheme: 'yellow', icon: FiRefreshCw },
+  // Direct Conversion
+  DIRECT_CODE_UNDER_REVIEW: { label: 'Direct Review Actions…', colorScheme: 'purple' },
+  DIRECT_CODE_ACCEPTED: { label: 'Mark Completed', colorScheme: 'green', icon: FiCheck },
+  DIRECT_CODE_REGENERATE_REQUESTED: { label: 'Regenerate Code', colorScheme: 'yellow', icon: FiRefreshCw },
 };
 
 function ActionPanel({
@@ -1103,15 +1380,18 @@ function ActionPanel({
   currentState,
   allowedTransitions,
   defaultLanguage,
+  jobType,
 }: {
   jobId: number;
   currentState: JobState;
   allowedTransitions: string[];
   defaultLanguage: TargetLanguage;
+  jobType: JobType;
 }) {
   const user = useAuthStore((s) => s.user);
   const username = user?.username ?? 'system';
   const transition = useTransitionJob(jobId);
+  const navigate = useNavigate();
   const { isOpen: isTransOpen, onOpen: onTransOpen, onClose: onTransClose } = useDisclosure();
   const { isOpen: isCodeGenOpen, onOpen: onCodeGenOpen, onClose: onCodeGenClose } = useDisclosure();
   const [targetState, setTargetState] = useState<JobState | null>(null);
@@ -1120,7 +1400,7 @@ function ActionPanel({
   if (allowedTransitions.length === 0) {
     return (
       <Badge colorScheme="green" variant="subtle" px={3} py={1.5} borderRadius="full" fontSize="sm">
-        {currentState === 'COMPLETED' ? '✓ Completed' : stateLabel(currentState)}
+        {(currentState === 'COMPLETED' || currentState === 'DIRECT_COMPLETED') ? '✓ Completed' : stateLabel(currentState)}
       </Badge>
     );
   }
@@ -1180,6 +1460,116 @@ function ActionPanel({
           onClose={onCodeGenClose}
         />
       </>
+    );
+  }
+
+  // DIRECT_CODE_REGENERATE_REQUESTED → regenerate via modal (same UX as CODE_REGENERATE_REQUESTED)
+  // Also offer an "Open Direct Studio" secondary button for full editor experience
+  if (currentState === 'DIRECT_CODE_REGENERATE_REQUESTED') {
+    return (
+      <>
+        <HStack spacing={2}>
+          <Button
+            leftIcon={<Icon as={FiRefreshCw} />}
+            colorScheme="yellow"
+            size="sm"
+            onClick={onCodeGenOpen}
+          >
+            Regenerate Code
+          </Button>
+          <Button
+            leftIcon={<Icon as={FiZap} />}
+            colorScheme="purple"
+            size="sm"
+            variant="outline"
+            onClick={() => navigate(`/direct-studio/${jobId}`)}
+          >
+            Open Direct Studio
+          </Button>
+        </HStack>
+        <DirectCodeRegenModal
+          jobId={jobId}
+          defaultLanguage={defaultLanguage}
+          isOpen={isCodeGenOpen}
+          onClose={onCodeGenClose}
+        />
+      </>
+    );
+  }
+
+  // DIRECT_CODE_UNDER_REVIEW → multi-choice: Accept / Reject & Regen
+  if (currentState === 'DIRECT_CODE_UNDER_REVIEW') {
+    return (
+      <>
+        <Menu>
+          <MenuButton
+            as={Button}
+            rightIcon={<FiChevronDown />}
+            colorScheme="purple"
+            size="sm"
+            isLoading={transition.isPending}
+          >
+            Direct Review Actions
+          </MenuButton>
+          <MenuList>
+            <MenuItem icon={<FiCheck />} onClick={() => openTransition('DIRECT_CODE_ACCEPTED')}>
+              Accept Code
+            </MenuItem>
+            <MenuItem icon={<FiRefreshCw />} onClick={() => openTransition('DIRECT_CODE_REGENERATE_REQUESTED')}>
+              Reject — Request Regeneration
+            </MenuItem>
+          </MenuList>
+        </Menu>
+        <TransitionModal
+          isOpen={isTransOpen}
+          onClose={onTransClose}
+          targetState={targetState}
+          reason={reason}
+          onReasonChange={setReason}
+          onConfirm={confirm}
+          isLoading={transition.isPending}
+        />
+      </>
+    );
+  }
+
+  // DIRECT_CODE_ACCEPTED → single transition to DIRECT_COMPLETED
+  if (currentState === 'DIRECT_CODE_ACCEPTED') {
+    return (
+      <>
+        <Button
+          leftIcon={<Icon as={FiCheck} />}
+          colorScheme="green"
+          size="sm"
+          isLoading={transition.isPending}
+          onClick={() => openTransition('DIRECT_COMPLETED')}
+        >
+          Mark Completed
+        </Button>
+        <TransitionModal
+          isOpen={isTransOpen}
+          onClose={onTransClose}
+          targetState={targetState}
+          reason={reason}
+          onReasonChange={setReason}
+          onConfirm={confirm}
+          isLoading={transition.isPending}
+        />
+      </>
+    );
+  }
+
+  // CREATED for DIRECT_CONVERSION → redirect to Direct Studio (generation is done via Direct Studio)
+  if (currentState === 'CREATED' && jobType === 'DIRECT_CONVERSION') {
+    return (
+      <Button
+        leftIcon={<Icon as={FiZap} />}
+        colorScheme="purple"
+        size="sm"
+        onClick={() => navigate(`/direct-studio/${jobId}`)}
+      >
+        Open Direct Studio
+      </Button>
     );
   }
 
@@ -1304,7 +1694,11 @@ function TransitionModal({
   isLoading: boolean;
 }) {
   if (!targetState) return null;
-  const needsReason = targetState === 'REGENERATE_REQUESTED' || targetState === 'CODE_REGENERATE_REQUESTED';
+  const needsReason = (
+    targetState === 'REGENERATE_REQUESTED' ||
+    targetState === 'CODE_REGENERATE_REQUESTED' ||
+    targetState === 'DIRECT_CODE_REGENERATE_REQUESTED'
+  );
   return (
     <Modal isOpen={isOpen} onClose={onClose} isCentered>
       <ModalOverlay />
@@ -1442,11 +1836,17 @@ export default function JobDetailPage() {
             </Heading>
             <HStack spacing={2} mt={0.5} flexWrap="wrap">
               <Badge
-                colorScheme={job.job_type === 'CODE_CONVERSION' ? 'purple' : 'blue'}
+                colorScheme={
+                  job.job_type === 'CODE_CONVERSION' ? 'purple' :
+                  job.job_type === 'DIRECT_CONVERSION' ? 'orange' :
+                  'blue'
+                }
                 variant="outline"
                 fontSize="xs"
               >
-                {job.job_type === 'CODE_CONVERSION' ? 'Job 2' : 'Job 1'}
+                {job.job_type === 'CODE_CONVERSION' ? 'Job 2' :
+                 job.job_type === 'DIRECT_CONVERSION' ? 'Direct' :
+                 'Job 1'}
               </Badge>
               <Badge colorScheme={stateColorScheme(job.current_state)} variant="subtle" fontSize="xs">
                 {stateLabel(job.current_state)}
@@ -1483,6 +1883,7 @@ export default function JobDetailPage() {
             currentState={job.current_state}
             allowedTransitions={allowedTransitions}
             defaultLanguage={(job.target_language ?? 'PYTHON') as TargetLanguage}
+            jobType={job.job_type}
           />
           <Tooltip label="Delete job" hasArrow>
             <IconButton
@@ -1515,10 +1916,12 @@ export default function JobDetailPage() {
         <Tabs variant="soft-rounded" colorScheme="brand" isLazy>
           <TabList bg={headerBg} px={5} py={3} gap={2} borderBottom="1px solid" borderColor={borderColor}>
             <Tab fontSize="sm">Overview</Tab>
+            {/* Source Code: shown for YAML_CONVERSION and DIRECT_CONVERSION */}
             {job.job_type !== 'CODE_CONVERSION' && (
               <Tab fontSize="sm">Source Code</Tab>
             )}
-            {job.job_type !== 'CODE_CONVERSION' && (
+            {/* YAML Versions: only for YAML_CONVERSION (two-step Job 1) */}
+            {job.job_type === 'YAML_CONVERSION' && (
               <Tab fontSize="sm">
                 YAML Versions
                 {job.yaml_versions_count > 0 && (
@@ -1528,7 +1931,8 @@ export default function JobDetailPage() {
                 )}
               </Tab>
             )}
-            {job.job_type === 'CODE_CONVERSION' && (
+            {/* Generated Code: shown for CODE_CONVERSION and DIRECT_CONVERSION */}
+            {(job.job_type === 'CODE_CONVERSION' || job.job_type === 'DIRECT_CONVERSION') && (
               <Tab fontSize="sm">
                 <HStack spacing={1.5}>
                   <Icon as={FiTerminal} boxSize={3.5} />
@@ -1538,20 +1942,24 @@ export default function JobDetailPage() {
             )}
           </TabList>
           <TabPanels>
+            {/* Tab 0: Overview — always */}
             <TabPanel p={5}>
               <OverviewPanel jobId={jobId} />
             </TabPanel>
+            {/* Tab 1: Source Code — YAML_CONVERSION + DIRECT_CONVERSION */}
             {job.job_type !== 'CODE_CONVERSION' && (
               <TabPanel p={5}>
                 <SourceCodePanel jobId={jobId} />
               </TabPanel>
             )}
-            {job.job_type !== 'CODE_CONVERSION' && (
+            {/* Tab 2 (YAML_CONVERSION only): YAML Versions */}
+            {job.job_type === 'YAML_CONVERSION' && (
               <TabPanel p={5}>
                 <YamlVersionsPanel jobId={jobId} currentState={job.current_state} />
               </TabPanel>
             )}
-            {job.job_type === 'CODE_CONVERSION' && (
+            {/* Tab 2 (CODE_CONVERSION) or Tab 2 (DIRECT_CONVERSION): Generated Code */}
+            {(job.job_type === 'CODE_CONVERSION' || job.job_type === 'DIRECT_CONVERSION') && (
               <TabPanel p={5}>
                 <GeneratedCodePanel jobId={jobId} currentState={job.current_state} />
               </TabPanel>

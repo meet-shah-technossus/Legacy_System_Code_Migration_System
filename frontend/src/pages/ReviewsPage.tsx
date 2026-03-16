@@ -55,6 +55,7 @@ import {
   FiThumbsUp,
   FiTrash2,
   FiXCircle,
+  FiZap,
 } from 'react-icons/fi';
 import { MdRateReview } from 'react-icons/md';
 import { useJobs } from '../hooks/useJobs';
@@ -881,6 +882,7 @@ function EmptyState({
 // ─── Reviews Page ─────────────────────────────────────────────────────────────
 
 export default function ReviewsPage() {
+  const navigate = useNavigate();
   const [selectedJob, setSelectedJob] = useState<MigrationJobSummary | null>(null);
   const [selectedCodeReviewJob, setSelectedCodeReviewJob] = useState<MigrationJobSummary | null>(null);
   const { isOpen, onOpen, onClose } = useDisclosure();
@@ -927,6 +929,22 @@ export default function ReviewsPage() {
     refetch: refetchCodeReview,
   } = useJobs({ state: 'CODE_UNDER_REVIEW', limit: 100 });
 
+  // Direct Conversion: jobs with code awaiting review
+  const {
+    data: directCodeUnderReviewJobs,
+    isLoading: directCodeReviewLoading,
+    isFetching: directCodeReviewFetching,
+    refetch: refetchDirectCodeReview,
+  } = useJobs({ state: 'DIRECT_CODE_UNDER_REVIEW', limit: 100 });
+
+  // Direct Conversion: jobs where regeneration was requested
+  const {
+    data: directRegenJobs,
+    isLoading: directRegenLoading,
+    isFetching: directRegenFetching,
+    refetch: refetchDirectRegen,
+  } = useJobs({ state: 'DIRECT_CODE_REGENERATE_REQUESTED', limit: 100 });
+
   // Recent review-related audit events to find jobs with reviews
   const { data: auditData } = useRecentAuditLogs(200);
   const reviewedJobIds = [
@@ -958,8 +976,8 @@ export default function ReviewsPage() {
   };
 
   const pendingCount = underReviewJobs?.length ?? 0;
-  const regenCount = (regenJobs?.length ?? 0) + (codeRegenJobs?.length ?? 0);
-  const codeReviewCount = codeUnderReviewJobs?.length ?? 0;
+  const regenCount = (regenJobs?.length ?? 0) + (codeRegenJobs?.length ?? 0) + (directRegenJobs?.length ?? 0);
+  const codeReviewCount = (codeUnderReviewJobs?.length ?? 0) + (directCodeUnderReviewJobs?.length ?? 0);
 
   return (
     <Container maxW="5xl" py={6} px={{ base: 4, md: 8 }}>
@@ -1083,13 +1101,13 @@ export default function ReviewsPage() {
                   icon={<FiRefreshCw />}
                   size="sm"
                   variant="ghost"
-                  isLoading={regenFetching || codeRegenFetching}
-                  onClick={() => { refetchRegen(); refetchCodeRegen(); }}
+                  isLoading={regenFetching || codeRegenFetching || directRegenFetching}
+                  onClick={() => { refetchRegen(); refetchCodeRegen(); refetchDirectRegen(); }}
                 />
               </HStack>
             </Flex>
 
-            {regenLoading || codeRegenLoading ? (
+            {regenLoading || codeRegenLoading || directRegenLoading ? (
               <Flex justify="center" py={12}>
                 <Spinner size="xl" color="yellow.400" />
               </Flex>
@@ -1160,6 +1178,64 @@ export default function ReviewsPage() {
                               href={`/jobs/${job.id}`}
                             >
                               View Job
+                            </Button>
+                          </Flex>
+                        </Box>
+                      ))}
+                    </VStack>
+                  </Box>
+                )}
+
+                {/* Direct Code Regeneration section */}
+                {directRegenJobs && directRegenJobs.length > 0 && (
+                  <Box>
+                    <Text fontSize="xs" fontWeight="semibold" color="orange.400" mb={2} textTransform="uppercase" letterSpacing="wider">
+                      Direct Code Regeneration ({directRegenJobs.length})
+                    </Text>
+                    <VStack spacing={3} align="stretch">
+                      {directRegenJobs.map((job) => (
+                        <Box
+                          key={job.id}
+                          bg={bg}
+                          border="1px solid"
+                          borderColor={borderColor}
+                          borderRadius="xl"
+                          p={4}
+                        >
+                          <Flex align="start" justify="space-between" gap={3} flexWrap="wrap">
+                            <VStack align="start" spacing={1}>
+                              <HStack spacing={2}>
+                                <Text fontWeight="semibold">
+                                  {job.job_name ?? `Job #${job.id}`}
+                                </Text>
+                                <Tag size="sm" fontFamily="mono" colorScheme="gray" variant="outline">
+                                  #{job.id}
+                                </Tag>
+                                <Badge colorScheme="orange" variant="outline" fontSize="xs">Direct</Badge>
+                              </HStack>
+                              <HStack spacing={2}>
+                                <Badge colorScheme={stateColorScheme(job.current_state)} variant="subtle" fontSize="xs">
+                                  {stateLabel(job.current_state)}
+                                </Badge>
+                                {job.target_language && (
+                                  <Badge colorScheme="cyan" variant="subtle" fontSize="xs">
+                                    {languageLabel(job.target_language)}
+                                  </Badge>
+                                )}
+                              </HStack>
+                              <Tooltip label={formatDateTime(job.updated_at)} hasArrow>
+                                <Text fontSize="xs" color="gray.400">
+                                  Requested {useAbsoluteTimestamps ? formatDateTime(job.updated_at) : timeAgo(job.updated_at)}
+                                </Text>
+                              </Tooltip>
+                            </VStack>
+                            <Button
+                              size="sm"
+                              colorScheme="orange"
+                              leftIcon={<Icon as={FiZap} />}
+                              onClick={() => navigate(`/direct-studio/${job.id}`)}
+                            >
+                              Open Direct Studio
                             </Button>
                           </Flex>
                         </Box>
@@ -1242,16 +1318,16 @@ export default function ReviewsPage() {
                 icon={<FiRefreshCw />}
                 size="sm"
                 variant="ghost"
-                isLoading={codeReviewFetching}
-                onClick={() => refetchCodeReview()}
+                isLoading={codeReviewFetching || directCodeReviewFetching}
+                onClick={() => { refetchCodeReview(); refetchDirectCodeReview(); }}
               />
             </Flex>
 
-            {codeReviewLoading ? (
+            {codeReviewLoading || directCodeReviewLoading ? (
               <Flex justify="center" py={12}>
                 <Spinner size="xl" color="purple.400" />
               </Flex>
-            ) : !codeUnderReviewJobs || codeUnderReviewJobs.length === 0 ? (
+            ) : codeReviewCount === 0 ? (
               <Box
                 bg={bg}
                 border="1px solid"
@@ -1266,7 +1342,90 @@ export default function ReviewsPage() {
                 />
               </Box>
             ) : (
-              <VStack spacing={3} align="stretch">
+              <VStack spacing={4} align="stretch">
+                {/* Direct Code Review section */}
+                {directCodeUnderReviewJobs && directCodeUnderReviewJobs.length > 0 && (
+                  <Box>
+                    <Text fontSize="xs" fontWeight="semibold" color="orange.400" mb={2} textTransform="uppercase" letterSpacing="wider">
+                      Direct Code Review ({directCodeUnderReviewJobs.length})
+                    </Text>
+                    <VStack spacing={3} align="stretch">
+                      {directCodeUnderReviewJobs.map((job) => (
+                        <Box
+                          key={job.id}
+                          bg={bg}
+                          border="1px solid"
+                          borderColor={borderColor}
+                          borderRadius="xl"
+                          p={4}
+                          transition="all 0.2s"
+                          _hover={{ borderColor: 'orange.400', bg: useColorModeValue('gray.50', 'gray.750') }}
+                        >
+                          <Flex align="start" justify="space-between" gap={3} flexWrap="wrap">
+                            <VStack align="start" spacing={1} flex={1} minW={0}>
+                              <HStack spacing={2} flexWrap="wrap">
+                                <Text fontWeight="semibold" noOfLines={1}>
+                                  {job.job_name ?? `Job #${job.id}`}
+                                </Text>
+                                <Tag size="sm" fontFamily="mono" colorScheme="gray" variant="outline">
+                                  #{job.id}
+                                </Tag>
+                              </HStack>
+                              <HStack spacing={2} flexWrap="wrap">
+                                <Badge colorScheme={stateColorScheme(job.current_state)} variant="subtle" fontSize="xs">
+                                  {stateLabel(job.current_state)}
+                                </Badge>
+                                {job.target_language && (
+                                  <Badge colorScheme="cyan" variant="subtle" fontSize="xs">
+                                    {languageLabel(job.target_language)}
+                                  </Badge>
+                                )}
+                                <Badge colorScheme="orange" variant="outline" fontSize="xs">Direct</Badge>
+                              </HStack>
+                              <HStack spacing={1}>
+                                <Icon as={FiClock} boxSize={3} color="gray.400" />
+                                <Tooltip label={formatDateTime(job.updated_at)} hasArrow>
+                                  <Text fontSize="xs" color="gray.400">
+                                    Waiting {useAbsoluteTimestamps ? formatDateTime(job.updated_at) : timeAgo(job.updated_at)}
+                                  </Text>
+                                </Tooltip>
+                              </HStack>
+                            </VStack>
+                            <HStack spacing={2} flexShrink={0}>
+                              <Tooltip label="Open job detail" hasArrow>
+                                <IconButton
+                                  aria-label="View job"
+                                  icon={<FiExternalLink />}
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => navigate(`/jobs/${job.id}`)}
+                                />
+                              </Tooltip>
+                              <Button
+                                size="sm"
+                                colorScheme="orange"
+                                leftIcon={<Icon as={FiZap} />}
+                                onClick={() => navigate(`/direct-studio/${job.id}`)}
+                              >
+                                Review in Studio
+                              </Button>
+                            </HStack>
+                          </Flex>
+                        </Box>
+                      ))}
+                    </VStack>
+                  </Box>
+                )}
+
+                {/* Job 2 Code Review section */}
+                {codeUnderReviewJobs && codeUnderReviewJobs.length > 0 && (
+                <Box>
+                  {directCodeUnderReviewJobs && directCodeUnderReviewJobs.length > 0 && (
+                    <Text fontSize="xs" fontWeight="semibold" color="purple.400" mb={2} textTransform="uppercase" letterSpacing="wider">
+                      Job 2 Code Review ({codeUnderReviewJobs.length})
+                    </Text>
+                  )}
+                  <VStack spacing={3} align="stretch">
                 {codeUnderReviewJobs.map((job) => (
                   <Box
                     key={job.id}
@@ -1334,6 +1493,9 @@ export default function ReviewsPage() {
                     </Flex>
                   </Box>
                 ))}
+                  </VStack>
+                </Box>
+                )}
               </VStack>
             )}
           </TabPanel>

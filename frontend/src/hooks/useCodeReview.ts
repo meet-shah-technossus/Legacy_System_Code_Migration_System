@@ -44,6 +44,10 @@ export function useSubmitCodeReview(jobId: number) {
       toast.success(successMsg);
     },
     onError: (err) => {
+      // Refresh job state — after a failed rejection the backend may have already
+      // committed the CODE_REGENERATE_REQUESTED state, so we need to re-fetch to
+      // show the correct retry button in the UI.
+      qc.invalidateQueries({ queryKey: JOB_KEYS.detail(jobId) });
       toast.error(getErrorMessage(err));
     },
   });

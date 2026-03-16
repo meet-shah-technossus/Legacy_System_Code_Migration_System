@@ -76,6 +76,8 @@ export function useGenerateYAML(jobId: number) {
       toast.success('YAML generated successfully');
     },
     onError: (err) => {
+      // Refresh job state so the retry button reflects actual backend state after failure
+      qc.invalidateQueries({ queryKey: JOB_KEYS.detail(jobId) });
       toast.error(getErrorMessage(err));
     },
   });
@@ -113,6 +115,8 @@ export function useRegenerateYAML(jobId: number) {
       toast.success('YAML regenerated with feedback');
     },
     onError: (err) => {
+      // Refresh job state so the Regenerate YAML button re-enables after a failed attempt
+      qc.invalidateQueries({ queryKey: JOB_KEYS.detail(jobId) });
       toast.error(getErrorMessage(err));
     },
   });

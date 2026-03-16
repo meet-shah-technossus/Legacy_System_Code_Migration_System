@@ -31,7 +31,7 @@ import { VS, useVSColors } from './vscodeTheme';
 import { useAuthStore } from '../../store/authStore';
 import { useJob } from '../../hooks/useJobs';
 import { chatApi } from '../../services/chatApi';
-import type { ChatMessage } from '../../services/chatApi';
+import type { ChatMessage, ChatLineComment } from '../../services/chatApi';
 import type { PendingLineComment } from '../../types';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -356,7 +356,15 @@ interface LineCommentChipProps {
 
 function LineCommentChip({ comment, onRemove }: LineCommentChipProps) {
   const colors = useVSColors();
-  const label = `#L${comment.lineNumber}: "${comment.text.length > 30 ? comment.text.slice(0, 30) + '…' : comment.text}"`;
+  const codePreview = comment.codeLine
+    ? (comment.codeLine.length > 28 ? comment.codeLine.slice(0, 28) + '…' : comment.codeLine)
+    : null;
+  const label = codePreview
+    ? `#L${comment.lineNumber}: \`${codePreview}\``
+    : `#L${comment.lineNumber}: "${comment.text.length > 30 ? comment.text.slice(0, 30) + '…' : comment.text}"`;
+  const tooltip = comment.codeLine
+    ? `Line ${comment.lineNumber}: ${comment.codeLine}\n\nAnnotation: ${comment.text}`
+    : `Line ${comment.lineNumber}: ${comment.text}`;
   return (
     <Flex
       align="center"
@@ -366,8 +374,8 @@ function LineCommentChip({ comment, onRemove }: LineCommentChipProps) {
       borderRadius="4px"
       bg="rgba(0,122,204,0.18)"
       border="1px solid rgba(0,122,204,0.4)"
-      maxW="220px"
-      title={`Line ${comment.lineNumber}: ${comment.text}`}
+      maxW="240px"
+      title={tooltip}
     >
       <Text
         fontSize="10px"
@@ -474,12 +482,29 @@ export default function ChatPanel({ jobId, lineComments = [], onRemoveLineCommen
     // Add the new user message to the history
     apiMessages.push({ role: 'user', content: trimmed });
 
+    // Map pending line comment chips to the API format so the LLM knows
+    // which specific lines the user is referring to in their question.
+    // code_line carries the actual source code at that line so the LLM
+    // can answer without guessing what the line contains.
+    const chatLineComments: ChatLineComment[] = (lineComments ?? []).map((c) => ({
+      line_number: c.lineNumber,
+      text: c.text,
+      code_line: c.codeLine,
+      code_type: c.codeType,
+    }));
+
     try {
       const res = await chatApi.send({
         messages: apiMessages,
         job_id: jobId ?? undefined,
         performed_by: performer,
+        line_comments: chatLineComments.length > 0 ? chatLineComments : undefined,
       });
+
+      // Clear the line comment chips — they've been consumed by this message
+      if (chatLineComments.length > 0 && onRemoveLineComment) {
+        (lineComments ?? []).forEach((c) => onRemoveLineComment(c.id));
+      }
 
       setMessages((prev) =>
         prev.map((m) =>

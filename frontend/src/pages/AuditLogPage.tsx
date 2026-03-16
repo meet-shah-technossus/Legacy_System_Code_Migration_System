@@ -54,18 +54,38 @@ import type { AuditLog } from '../types';
 type ActionMeta = { colorScheme: string; label: string };
 
 const ACTION_META: Record<string, ActionMeta> = {
+  // Job lifecycle
   JOB_CREATED: { colorScheme: 'blue', label: 'Job Created' },
   JOB_DELETED: { colorScheme: 'red', label: 'Job Deleted' },
   JOB_COMPLETED: { colorScheme: 'green', label: 'Job Completed' },
+  JOB2_CREATED: { colorScheme: 'blue', label: 'Job 2 Created' },
+  JOB_QUEUED: { colorScheme: 'cyan', label: 'Job Queued' },
+  // State transitions
   STATE_CHANGED: { colorScheme: 'purple', label: 'State Changed' },
+  // YAML operations
   YAML_GENERATED: { colorScheme: 'cyan', label: 'YAML Generated' },
   YAML_VALIDATED: { colorScheme: 'teal', label: 'YAML Validated' },
   YAML_VALIDATION_FAILED: { colorScheme: 'red', label: 'Validation Failed' },
   YAML_VERSION_CHANGED: { colorScheme: 'cyan', label: 'YAML Version Changed' },
+  // YAML review
   REVIEW_SUBMITTED: { colorScheme: 'orange', label: 'Review Submitted' },
-  REGENERATION_REQUESTED: { colorScheme: 'yellow', label: 'Regeneration Requested' },
+  REGENERATION_REQUESTED: { colorScheme: 'yellow', label: 'Regen Requested' },
+  // Code generation (Job 2)
   CODE_GENERATED: { colorScheme: 'purple', label: 'Code Generated' },
   CODE_GENERATION_FAILED: { colorScheme: 'red', label: 'Code Gen Failed' },
+  CODE_REVIEW_SUBMITTED: { colorScheme: 'purple', label: 'Code Review Submitted' },
+  CODE_REGENERATION_REQUESTED: { colorScheme: 'yellow', label: 'Code Regen Requested' },
+  CODE_ACCEPTED: { colorScheme: 'teal', label: 'Code Accepted' },
+  // Direct Conversion
+  DIRECT_CODE_GENERATED: { colorScheme: 'orange', label: 'Direct Code Generated' },
+  DIRECT_CODE_GENERATION_FAILED: { colorScheme: 'red', label: 'Direct Code Failed' },
+  DIRECT_CODE_REVIEW_SUBMITTED: { colorScheme: 'orange', label: 'Direct Review Submitted' },
+  DIRECT_CODE_REGENERATION_REQUESTED: { colorScheme: 'yellow', label: 'Direct Regen Requested' },
+  DIRECT_CODE_ACCEPTED: { colorScheme: 'teal', label: 'Direct Code Accepted' },
+  DIRECT_JOB_COMPLETED: { colorScheme: 'green', label: 'Direct Job Completed' },
+  // Comments
+  LINE_COMMENT_ADDED: { colorScheme: 'cyan', label: 'Line Comment' },
+  // Errors & system
   ERROR_OCCURRED: { colorScheme: 'red', label: 'Error' },
   SYSTEM_HEALTH_CHECK: { colorScheme: 'gray', label: 'Health Check' },
 };
@@ -515,7 +535,8 @@ function ErrorsTab() {
           (l) =>
             l.action === 'ERROR_OCCURRED' ||
             l.action === 'YAML_VALIDATION_FAILED' ||
-            l.action === 'CODE_GENERATION_FAILED'
+            l.action === 'CODE_GENERATION_FAILED' ||
+            l.action === 'DIRECT_CODE_GENERATION_FAILED'
         )}
         isLoading={isLoading}
         isFetching={isFetching}
@@ -560,7 +581,7 @@ function ActionStatsStrip({ logs }: { logs: AuditLog[] | undefined }) {
 
 export default function AuditLogPage() {
   const auditRefreshInterval = usePrefsStore((s) => s.auditRefreshInterval);
-  const { data: recentData, isFetching } = useRecentAuditLogs(200, auditRefreshInterval * 1000);
+  const { data: recentData, isFetching } = useRecentAuditLogs(500, auditRefreshInterval * 1000);
   const bg = useColorModeValue('white', 'gray.800');
   const borderColor = useColorModeValue('gray.200', 'gray.700');
 
@@ -568,7 +589,8 @@ export default function AuditLogPage() {
     (l) =>
       l.action === 'ERROR_OCCURRED' ||
       l.action === 'YAML_VALIDATION_FAILED' ||
-      l.action === 'CODE_GENERATION_FAILED'
+      l.action === 'CODE_GENERATION_FAILED' ||
+      l.action === 'DIRECT_CODE_GENERATION_FAILED'
   ).length ?? 0;
 
   return (

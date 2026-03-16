@@ -9,6 +9,8 @@ export { default as ExplorerPanel } from './ExplorerPanel';
 export type { ExplorerPanelProps } from './ExplorerPanel';
 export { default as EditorPanel } from './EditorPanel';
 export type { EditorPanelProps } from './EditorPanel';
+export { default as DirectEditorPanel } from './DirectEditorPanel';
+export type { DirectEditorPanelProps } from './DirectEditorPanel';
 export { default as ChatPanel } from './ChatPanel';
 export type { ChatPanelProps } from './ChatPanel';
 export { VS } from './vscodeTheme';

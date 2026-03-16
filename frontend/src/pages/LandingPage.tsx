@@ -38,6 +38,7 @@ export default function LandingPage() {
           activeTab={activeTab}
           selectedJobId={selectedJobId}
           onSelectJob={handleSelectJob}
+          jobTypeFilter="two-step"
         />
       )}
       editor={
