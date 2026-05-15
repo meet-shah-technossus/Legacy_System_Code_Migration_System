@@ -6,6 +6,10 @@ import type {
   YAMLApprovalRequest,
   YAMLRegenerationRequest,
   YAMLStatistics,
+  YAMLDescription,
+  SourceDescription,
+  JobBRD,
+  DescriptionFormat,
 } from '../types';
 
 export const yamlApi = {
@@ -73,4 +77,119 @@ export const yamlApi = {
     api
       .post<YAMLVersion>(`/jobs/${jobId}/yaml/versions`, data)
       .then((r) => r.data),
+
+  // ── Description endpoints ─────────────────────────────────────────────────
+
+  /** Generate (or re-generate) the plain-English description for the job's approved YAML */
+  generateDescription: (
+    jobId: number,
+    forceRegenerate = false
+  ): Promise<YAMLDescription> =>
+    api
+      .post<YAMLDescription>(`/jobs/${jobId}/yaml/description/generate`, {
+        force_regenerate: forceRegenerate,
+      })
+      .then((r) => r.data),
+
+  /** Get the cached description (404 if not yet generated) */
+  getDescription: (jobId: number): Promise<YAMLDescription> =>
+    api
+      .get<YAMLDescription>(`/jobs/${jobId}/yaml/description`)
+      .then((r) => r.data),
+
+  /**
+   * Download the description as a DOCX or PDF blob.
+   * The caller is responsible for triggering the browser download.
+   */
+  downloadDescription: (jobId: number, format: DescriptionFormat): Promise<Blob> =>
+    api
+      .get(`/jobs/${jobId}/yaml/description/download`, {
+        params: { format },
+        responseType: 'blob',
+      })
+      .then((r) => r.data as Blob),
+
+  // ── Source (Pick Basic) description endpoints ────────────────────────────
+
+  /** Generate (or re-generate) the plain-English description from Pick Basic source code */
+  generateSourceDescription: (
+    jobId: number,
+    forceRegenerate = false
+  ): Promise<SourceDescription> =>
+    api
+      .post<SourceDescription>(`/jobs/${jobId}/source/description/generate`, {
+        force_regenerate: forceRegenerate,
+      })
+      .then((r) => r.data),
+
+  /** Get the cached source description (404 if not yet generated) */
+  getSourceDescription: (jobId: number): Promise<SourceDescription> =>
+    api
+      .get<SourceDescription>(`/jobs/${jobId}/source/description`)
+      .then((r) => r.data),
+
+  /** Download the source description as a DOCX, PDF, or Markdown blob */
+  downloadSourceDescription: (jobId: number, format: DescriptionFormat): Promise<Blob> =>
+    api
+      .get(`/jobs/${jobId}/source/description/download`, {
+        params: { format },
+        responseType: 'blob',
+      })
+      .then((r) => r.data as Blob),
+
+  // ── Business Requirements Document (BRD) endpoints ──────────────────────
+
+  /** Generate (or re-generate) the BRD from the approved YAML only */
+  generateBRDFromYAML: (
+    jobId: number,
+    forceRegenerate = false
+  ): Promise<JobBRD> =>
+    api
+      .post<JobBRD>(`/jobs/${jobId}/brd/generate`, {
+        generation_source: 'yaml',
+        force_regenerate: forceRegenerate,
+      })
+      .then((r) => r.data),
+
+  /** Generate (or re-generate) the BRD from the original source code only */
+  generateBRDFromSource: (
+    jobId: number,
+    forceRegenerate = false
+  ): Promise<JobBRD> =>
+    api
+      .post<JobBRD>(`/jobs/${jobId}/brd/generate`, {
+        generation_source: 'source_code',
+        force_regenerate: forceRegenerate,
+      })
+      .then((r) => r.data),
+
+  /** Get the cached YAML-based BRD (404 if not yet generated) */
+  getBRDFromYAML: (jobId: number): Promise<JobBRD> =>
+    api
+      .get<JobBRD>(`/jobs/${jobId}/brd`, { params: { source: 'yaml' } })
+      .then((r) => r.data),
+
+  /** Get the cached source-code-based BRD (404 if not yet generated) */
+  getBRDFromSource: (jobId: number): Promise<JobBRD> =>
+    api
+      .get<JobBRD>(`/jobs/${jobId}/brd`, { params: { source: 'source_code' } })
+      .then((r) => r.data),
+
+  /** Download the YAML-based BRD as a DOCX, PDF, or Markdown blob */
+  downloadBRDFromYAML: (jobId: number, format: DescriptionFormat): Promise<Blob> =>
+    api
+      .get(`/jobs/${jobId}/brd/download`, {
+        params: { source: 'yaml', format },
+        responseType: 'blob',
+      })
+      .then((r) => r.data as Blob),
+
+  /** Download the source-code-based BRD as a DOCX, PDF, or Markdown blob */
+  downloadBRDFromSource: (jobId: number, format: DescriptionFormat): Promise<Blob> =>
+    api
+      .get(`/jobs/${jobId}/brd/download`, {
+        params: { source: 'source_code', format },
+        responseType: 'blob',
+      })
+      .then((r) => r.data as Blob),
 };

@@ -15,6 +15,7 @@ from app.core.config import settings
 from app.llm.openai_client import get_openai_client
 from app.models.job import MigrationJob
 from app.models.yaml_version import YAMLVersion
+from app.models.code import GeneratedCode
 from app.core.exceptions import LLMServiceException, ConfigurationException
 import logging
 
@@ -140,6 +141,30 @@ def chat(
                     )
             except Exception as yaml_err:
                 logger.debug(f"Could not fetch YAML for chat context: {yaml_err}")
+
+            # Include latest current generated code (truncated to keep prompt reasonable)
+            try:
+                gen_code: Optional[GeneratedCode] = (
+                    db.query(GeneratedCode)
+                    .filter(
+                        GeneratedCode.job_id == request.job_id,
+                        GeneratedCode.is_current == True,
+                    )
+                    .order_by(GeneratedCode.generated_at.desc())
+                    .first()
+                )
+                if gen_code and gen_code.code_content:
+                    lang = gen_code.target_language or "code"
+                    lang_fence = lang.lower()
+                    # Truncate to keep prompt within token budget (~4 000 chars)
+                    code_snippet = gen_code.code_content[:4000]
+                    ellipsis = "\n// ... (truncated)" if len(gen_code.code_content) > 4000 else ""
+                    ctx_lines.append(
+                        f"\n### Generated {lang} code (v{gen_code.version_number or 1})\n"
+                        f"```{lang_fence}\n{code_snippet}{ellipsis}\n```"
+                    )
+            except Exception as code_err:
+                logger.debug(f"Could not fetch generated code for chat context: {code_err}")
 
             system_content += "\n".join(ctx_lines)
 

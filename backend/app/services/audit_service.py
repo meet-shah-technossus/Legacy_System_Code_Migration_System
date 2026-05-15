@@ -310,6 +310,67 @@ class AuditService:
         )
     
     @staticmethod
+    def log_description_generated(
+        db: Session,
+        job_id: int,
+        yaml_version_id: int,
+        performed_by: Optional[str] = None,
+        llm_model: Optional[str] = None,
+    ) -> AuditLog:
+        """Log YAML description generation event."""
+        return AuditService._create_log(
+            db=db,
+            job_id=job_id,
+            action=AuditAction.DESCRIPTION_GENERATED,
+            description="Plain-English description generated for approved YAML",
+            performed_by=performed_by or "SYSTEM",
+            metadata={
+                "yaml_version_id": yaml_version_id,
+                "llm_model": llm_model,
+            },
+        )
+
+    @staticmethod
+    def log_source_description_generated(
+        db: Session,
+        job_id: int,
+        performed_by: Optional[str] = None,
+        llm_model: Optional[str] = None,
+    ) -> AuditLog:
+        """Log Pick Basic source description generation event."""
+        return AuditService._create_log(
+            db=db,
+            job_id=job_id,
+            action=AuditAction.SOURCE_DESCRIPTION_GENERATED,
+            description="Plain-English description generated from Pick Basic source code",
+            performed_by=performed_by or "SYSTEM",
+            metadata={
+                "llm_model": llm_model,
+            },
+        )
+
+    @staticmethod
+    def log_brd_generated(
+        db: Session,
+        job_id: int,
+        yaml_version_id: Optional[int] = None,
+        performed_by: Optional[str] = None,
+        llm_model: Optional[str] = None,
+    ) -> AuditLog:
+        """Log Business Requirements Document generation event."""
+        return AuditService._create_log(
+            db=db,
+            job_id=job_id,
+            action=AuditAction.BRD_GENERATED,
+            description="Business Requirements Document (BRD) generated",
+            performed_by=performed_by or "SYSTEM",
+            metadata={
+                "yaml_version_id": yaml_version_id,
+                "llm_model": llm_model,
+            },
+        )
+
+    @staticmethod
     def log_yaml_version_changed(
         db: Session,
         job_id: int,

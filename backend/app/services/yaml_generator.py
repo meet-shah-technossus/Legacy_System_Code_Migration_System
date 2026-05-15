@@ -7,9 +7,18 @@ from app.services.yaml_validator import YAMLValidator
 from app.schemas.yaml_schema import PickBasicYAMLSchema
 from app.core.config import settings
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
+
+# YAML output can be large for complex programs — set a generous ceiling so the
+# LLM is never cut off mid-document regardless of which provider is used.
+YAML_MAX_TOKENS = 16_000
+
+
+def _current_utc_iso_z() -> str:
+    """Return current UTC time in ISO-8601 with Z suffix."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class YAMLGenerationResult:
@@ -80,7 +89,8 @@ class YAMLGenerator:
             response = self.llm_client.generate_with_retry(
                 prompt=prompt,
                 max_retries=3,
-                temperature=0.2
+                temperature=0.2,
+                max_output_tokens=YAML_MAX_TOKENS,
             )
             # Both OpenAI and Anthropic clients return {"text": ...}
             raw_yaml: str = response.get("text", "") if isinstance(response, dict) else str(response)
@@ -91,6 +101,9 @@ class YAMLGenerator:
             is_valid, validated_schema, errors = self.validator.validate_yaml_content(raw_yaml)
             
             if is_valid:
+                # Always stamp metadata with real generation time instead of
+                # trusting a potentially stale model-provided example date.
+                validated_schema.metadata.analysis_timestamp = _current_utc_iso_z()
                 # Phase 2: normalize — re-serialize validated schema so all 7 sections
                 # are always present with stable ordering before storing to DB.
                 normalized_yaml = self.validator.normalize_to_yaml(validated_schema)
@@ -229,7 +242,8 @@ class YAMLGenerator:
             response = self.llm_client.generate_with_retry(
                 prompt=prompt,
                 max_retries=2,
-                temperature=0.3  # Slightly higher temperature for regeneration
+                temperature=0.3,  # Slightly higher temperature for regeneration
+                max_output_tokens=YAML_MAX_TOKENS,
             )
             raw_yaml: str = response.get("text", "") if isinstance(response, dict) else str(response)
             
@@ -240,6 +254,8 @@ class YAMLGenerator:
             
             # Phase 2: normalize regenerated YAML the same way as initial generation
             if is_valid:
+                # Keep timestamp accurate on regenerations as well.
+                validated_schema.metadata.analysis_timestamp = _current_utc_iso_z()
                 normalized_yaml = self.validator.normalize_to_yaml(validated_schema)
                 logger.info("YAML regeneration successful, normalized to %d characters", len(normalized_yaml))
             else:

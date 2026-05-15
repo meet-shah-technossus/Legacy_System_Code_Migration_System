@@ -48,7 +48,11 @@ class AnthropicClient:
         max_output_tokens: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
-        Generate content using the Anthropic Messages API.
+        Generate content using the Anthropic Messages API (streaming transport).
+
+        Anthropic requires streaming for requests that may produce large outputs or
+        run longer than 10 minutes.  We use the streaming context manager to collect
+        the full response text, which is transparent to all callers.
 
         Args:
             prompt: The prompt to send to the model
@@ -74,21 +78,22 @@ class AnthropicClient:
 
             # Resolve model name at call time so DB changes take effect without restart
             active_model = get_config_value(KEY_ANTHROPIC_MODEL, self.model_name)
-            response = self.client.messages.create(
+            # Keep self.model_name in sync so callers (e.g. llm_metadata) see the
+            # actual model that was used, not the stale startup default.
+            self.model_name = active_model
+            tokens = max_output_tokens or settings.MAX_TOKENS
+
+            # Use streaming to avoid Anthropic's 10-minute non-streaming timeout.
+            # stream.get_final_text() collects all chunks and returns the complete text.
+            with self.client.messages.stream(
                 model=active_model,
-                max_tokens=max_output_tokens or settings.MAX_TOKENS,
+                max_tokens=tokens,
                 temperature=temp,
                 messages=[{"role": "user", "content": prompt}],
-            )
+            ) as stream:
+                text = stream.get_final_text()
 
-            # Extract text from the first content block
-            text = ""
-            for block in response.content:
-                if hasattr(block, "text"):
-                    text = block.text
-                    break
-
-            if not text.strip():
+            if not text or not text.strip():
                 raise LLMServiceException(
                     "Empty response from Anthropic API",
                     model_name=self.model_name

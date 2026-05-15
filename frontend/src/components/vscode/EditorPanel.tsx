@@ -52,18 +52,19 @@ import ResizeHandle from './ResizeHandle';
 import VersionDiffPanel from './VersionDiffPanel';
 import { useJob, useParentJob, useJobWithSource, useAddLineComment, useUpdateJob, useTransitionJob } from '../../hooks/useJobs';
 import { useQueryClient, useIsMutating } from '@tanstack/react-query';
-import { useLatestYAML, useGenerateYAML, YAML_KEYS, useEditYAMLVersion, useYAMLVersions, useYAMLVersion, useCreateYAMLVersion, useApproveYAML } from '../../hooks/useYaml';
+import { useLatestYAML, useGenerateYAML, YAML_KEYS, useEditYAMLVersion, useYAMLVersions, useYAMLVersion, useCreateYAMLVersion, useApproveYAML, useYamlDescription, useGenerateDescription, useDownloadDescription, useSourceDescription, useGenerateSourceDescription, useDownloadSourceDescription, useBRDFromYAML, useGenerateBRDFromYAML, useDownloadBRDFromYAML, useBRDFromSource, useGenerateBRDFromSource, useDownloadBRDFromSource } from '../../hooks/useYaml';
 import { useGeneratedCode, useGenerateCode, useEditCode, useCodeVersions, useCodeVersion, useCreateCodeVersion } from '../../hooks/useCode';
 import GenerationProcessingOverlay from './GenerationProcessingOverlay';
+import MarkdownRenderer from '../common/MarkdownRenderer';
 import { useSubmitReview } from '../../hooks/useReviews';
 import { useAuthStore } from '../../store/authStore';
 import { stateLabel, monacoLanguage, languageLabel } from '../../utils/format';
-import type { MigrationJob, TargetLanguage, PendingLineComment, LineCommentCreate, ReviewDecision } from '../../types';
+import type { MigrationJob, TargetLanguage, PendingLineComment, LineCommentCreate, ReviewDecision, DescriptionFormat } from '../../types';
 import { codeApi } from '../../services/codeApi';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-type EditorTab = 'yaml' | 'code';
+type EditorTab = 'yaml' | 'code' | 'description' | 'source-description' | 'brd-yaml' | 'brd-source';
 
 const LANG_EXT: Record<TargetLanguage, string> = {
   PYTHON:     '.py',
@@ -1036,6 +1037,26 @@ function JobEditor({ jobId, pendingLineComments, onAddLineComment, onClearLineCo
   // Hook must be called unconditionally (React rules)
   const approveYAMLVersion = useApproveYAML(yamlSourceId, activeYAMLVersionNum);
 
+  // ── Description hooks ────────────────────────────────────────────────────
+  const { data: descriptionData, isLoading: descriptionLoading } = useYamlDescription(yamlSourceId);
+  const generateDescription = useGenerateDescription(yamlSourceId);
+  const downloadDescription = useDownloadDescription(yamlSourceId, job?.source_filename);
+  const hasApprovedYAML = yamlVersionsList?.some(v => v.is_approved) ?? false;
+
+  // ── Source description hooks ────────────────────────────────────────────
+  const { data: sourceDescriptionData, isLoading: sourceDescriptionLoading } = useSourceDescription(yamlSourceId);
+  const generateSourceDescription = useGenerateSourceDescription(yamlSourceId);
+  const downloadSourceDescription = useDownloadSourceDescription(yamlSourceId, job?.source_filename);
+  const hasSourceCode = !!(job?.source_filename || jobWithSource?.original_source_code);
+
+  // ── BRD hooks ─────────────────────────────────────────────────────────────
+  const { data: brdYamlData, isLoading: brdYamlLoading } = useBRDFromYAML(yamlSourceId);
+  const generateBRDYaml = useGenerateBRDFromYAML(yamlSourceId);
+  const downloadBRDYaml = useDownloadBRDFromYAML(yamlSourceId, job?.source_filename);
+  const { data: brdSourceData, isLoading: brdSourceLoading } = useBRDFromSource(yamlSourceId);
+  const generateBRDSource = useGenerateBRDFromSource(yamlSourceId);
+  const downloadBRDSource = useDownloadBRDFromSource(yamlSourceId, job?.source_filename);
+
   // ── Tab definitions ──────────────────────────────────────────────────────
   const tabs: Array<{ id: EditorTab; label: string; color: string }> = [
     {
@@ -1048,6 +1069,34 @@ function JobEditor({ jobId, pendingLineComments, onAddLineComment, onClearLineCo
           id:    'code' as EditorTab,
           label: codeFilename(job!),
           color: job?.target_language ? LANG_COLOR[job.target_language] : '#cccccc',
+        }]
+      : []),
+    ...(!isJob2 && hasApprovedYAML
+      ? [{
+          id:    'description' as EditorTab,
+          label: 'description.md',
+          color: '#a855f6',
+        }]
+      : []),
+    ...(!isJob2 && hasSourceCode
+      ? [{
+          id:    'source-description' as EditorTab,
+          label: 'source-desc.md',
+          color: '#14b8a6',
+        }]
+      : []),
+    ...(!isJob2 && hasApprovedYAML
+      ? [{
+          id:    'brd-yaml' as EditorTab,
+          label: 'brd-yaml.md',
+          color: '#f97316',
+        }]
+      : []),
+    ...(!isJob2 && hasSourceCode
+      ? [{
+          id:    'brd-source' as EditorTab,
+          label: 'brd-source.md',
+          color: '#d97706',
         }]
       : []),
   ];
@@ -1070,6 +1119,22 @@ function JobEditor({ jobId, pendingLineComments, onAddLineComment, onClearLineCo
       if (selectedYAMLVersionNum && specificYAMLLoading) return 'loading';
       if (selectedYAMLVersionNum && !specificYAMLVersion) return 'loading';
       return 'content';
+    } else if (activeTab === 'description') {
+      if (descriptionLoading) return 'loading';
+      if (!descriptionData) return 'generate-description';
+      return 'description';
+    } else if (activeTab === 'source-description') {
+      if (sourceDescriptionLoading) return 'loading';
+      if (!sourceDescriptionData) return 'generate-source-description';
+      return 'source-description';
+    } else if (activeTab === 'brd-yaml') {
+      if (brdYamlLoading) return 'loading';
+      if (!brdYamlData) return 'generate-brd-yaml';
+      return 'brd-yaml';
+    } else if (activeTab === 'brd-source') {
+      if (brdSourceLoading) return 'loading';
+      if (!brdSourceData) return 'generate-brd-source';
+      return 'brd-source';
     } else {
       if (codeLoading) return 'loading';
       if (codeError || !generatedCode) return 'generate';
@@ -1701,6 +1766,428 @@ function JobEditor({ jobId, pendingLineComments, onAddLineComment, onClearLineCo
       {/* Main content */}
       {showContent === 'loading' && <LoadingState />}
       {showContent === 'generate' && <GenerateCTA job={job} />}
+
+      {/* Description: generate CTA */}
+      {showContent === 'generate-description' && (
+        <VStack flex={1} justify="center" align="center" spacing={5} py={16}>
+          <Icon as={FiFileText as ComponentType} boxSize="36px" color="#a855f6" opacity={0.7} />
+          <Text fontSize="14px" color={colors.fgMuted} textAlign="center" maxW="360px">
+            Generate a plain-English business description from the approved YAML.
+          </Text>
+          <Button
+            colorScheme="purple"
+            size="md"
+            leftIcon={<Icon as={FiPlay as ComponentType} boxSize="14px" />}
+            isLoading={generateDescription.isPending}
+            loadingText="Generating…"
+            onClick={() => generateDescription.mutate(false)}
+          >
+            Generate Description
+          </Button>
+        </VStack>
+      )}
+
+      {/* Description: content view */}
+      {showContent === 'description' && descriptionData && (
+        <Flex direction="column" flex={1} overflow="hidden" minH={0}>
+          {/* Action bar */}
+          <Flex
+            align="center"
+            justify="space-between"
+            px={4}
+            py="6px"
+            bg="rgba(168,85,246,0.08)"
+            borderBottom="1px solid rgba(168,85,246,0.20)"
+            flexShrink={0}
+          >
+            <Flex align="center" gap={2}>
+              <Icon as={FiFileText as ComponentType} color="#a855f6" boxSize="14px" />
+              <Text fontSize="12px" color="#c084fc" fontWeight="medium">
+                Functional Requirements Specification (FRS)
+              </Text>
+              <Text fontSize="11px" color={colors.fgMuted}>
+                · {descriptionData.llm_model ?? 'AI'}
+              </Text>
+            </Flex>
+            <HStack spacing={1}>
+              <Tooltip label="Download as Word (.docx)" hasArrow placement="top">
+                <IconButton
+                  aria-label="Download as Word"
+                  icon={<Icon as={FiFileText as ComponentType} boxSize="13px" />}
+                  size="xs"
+                  variant="ghost"
+                  color="#c084fc"
+                  _hover={{ bg: 'rgba(168,85,246,0.15)' }}
+                  minW="26px" h="26px"
+                  isLoading={downloadDescription.isPending}
+                  onClick={() => downloadDescription.mutate('docx' as DescriptionFormat)}
+                />
+              </Tooltip>
+              <Tooltip label="Download as PDF" hasArrow placement="top">
+                <IconButton
+                  aria-label="Download as PDF"
+                  icon={<Icon as={FiDownload as ComponentType} boxSize="13px" />}
+                  size="xs"
+                  variant="ghost"
+                  color="#c084fc"
+                  _hover={{ bg: 'rgba(168,85,246,0.15)' }}
+                  minW="26px" h="26px"
+                  isLoading={downloadDescription.isPending}
+                  onClick={() => downloadDescription.mutate('pdf' as DescriptionFormat)}
+                />
+              </Tooltip>
+              <Tooltip label="Download as Markdown (.md)" hasArrow placement="top">
+                <IconButton
+                  aria-label="Download as Markdown"
+                  icon={<Icon as={FiFileText as ComponentType} boxSize="13px" />}
+                  size="xs"
+                  variant="ghost"
+                  color="#c084fc"
+                  _hover={{ bg: 'rgba(168,85,246,0.15)' }}
+                  minW="26px" h="26px"
+                  isLoading={downloadDescription.isPending}
+                  onClick={() => downloadDescription.mutate('md' as DescriptionFormat)}
+                />
+              </Tooltip>
+              <Tooltip label="Regenerate description" hasArrow placement="top">
+                <IconButton
+                  aria-label="Regenerate description"
+                  icon={<Icon as={FiRotateCcw as ComponentType} boxSize="13px" />}
+                  size="xs"
+                  variant="ghost"
+                  color="#c084fc"
+                  _hover={{ bg: 'rgba(168,85,246,0.15)' }}
+                  minW="26px" h="26px"
+                  isLoading={generateDescription.isPending}
+                  onClick={() => generateDescription.mutate(true)}
+                />
+              </Tooltip>
+            </HStack>
+          </Flex>
+          {/* Description text */}
+          <Box
+            flex={1}
+            overflow="auto"
+            px={6}
+            py={4}
+          >
+            <MarkdownRenderer content={descriptionData.description_text} variant="vscode" />
+          </Box>
+        </Flex>
+      )}
+
+      {/* Source description: generate CTA */}
+      {showContent === 'generate-source-description' && (
+        <VStack flex={1} justify="center" align="center" spacing={5} py={16}>
+          <Icon as={FiCode as ComponentType} boxSize="36px" color="#14b8a6" opacity={0.7} />
+          <Text fontSize="14px" color={colors.fgMuted} textAlign="center" maxW="360px">
+            Generate a plain-English business description directly from the Pick Basic source code.
+          </Text>
+          <Button
+            colorScheme="teal"
+            size="md"
+            leftIcon={<Icon as={FiPlay as ComponentType} boxSize="14px" />}
+            isLoading={generateSourceDescription.isPending}
+            loadingText="Generating…"
+            onClick={() => generateSourceDescription.mutate(false)}
+          >
+            Generate Source Description
+          </Button>
+        </VStack>
+      )}
+
+      {/* BRD from YAML: generate CTA */}
+      {showContent === 'generate-brd-yaml' && (
+        <VStack flex={1} justify="center" align="center" spacing={5} py={16}>
+          <Icon as={FiFileText as ComponentType} boxSize="36px" color="#f97316" opacity={0.7} />
+          <Text fontSize="14px" color={colors.fgMuted} textAlign="center" maxW="360px">
+            Generate a Business Requirements Document using only the approved YAML content.
+          </Text>
+          <Button
+            colorScheme="orange"
+            size="md"
+            leftIcon={<Icon as={FiPlay as ComponentType} boxSize="14px" />}
+            isLoading={generateBRDYaml.isPending}
+            loadingText="Generating…"
+            onClick={() => generateBRDYaml.mutate(false)}
+          >
+            Generate BRD from YAML
+          </Button>
+        </VStack>
+      )}
+
+      {/* BRD from YAML: content view */}
+      {showContent === 'brd-yaml' && brdYamlData && (
+        <Flex direction="column" flex={1} overflow="hidden" minH={0}>
+          <Flex
+            align="center"
+            justify="space-between"
+            px={4}
+            py="6px"
+            bg="rgba(249,115,22,0.08)"
+            borderBottom="1px solid rgba(249,115,22,0.20)"
+            flexShrink={0}
+          >
+            <Flex align="center" gap={2}>
+              <Icon as={FiFileText as ComponentType} color="#f97316" boxSize="14px" />
+              <Text fontSize="12px" color="#fb923c" fontWeight="medium">
+                BRD — from Approved YAML
+              </Text>
+              <Text fontSize="11px" color={colors.fgMuted}>
+                · {brdYamlData.llm_model ?? 'AI'}
+              </Text>
+            </Flex>
+            <HStack spacing={1}>
+              <Tooltip label="Download as Word (.docx)" hasArrow placement="top">
+                <IconButton
+                  aria-label="Download as Word"
+                  icon={<Icon as={FiFileText as ComponentType} boxSize="13px" />}
+                  size="xs"
+                  variant="ghost"
+                  color="#fb923c"
+                  _hover={{ bg: 'rgba(249,115,22,0.15)' }}
+                  minW="26px" h="26px"
+                  isLoading={downloadBRDYaml.isPending}
+                  onClick={() => downloadBRDYaml.mutate('docx')}
+                />
+              </Tooltip>
+              <Tooltip label="Download as PDF" hasArrow placement="top">
+                <IconButton
+                  aria-label="Download as PDF"
+                  icon={<Icon as={FiDownload as ComponentType} boxSize="13px" />}
+                  size="xs"
+                  variant="ghost"
+                  color="#fb923c"
+                  _hover={{ bg: 'rgba(249,115,22,0.15)' }}
+                  minW="26px" h="26px"
+                  isLoading={downloadBRDYaml.isPending}
+                  onClick={() => downloadBRDYaml.mutate('pdf')}
+                />
+              </Tooltip>
+              <Tooltip label="Download as Markdown (.md)" hasArrow placement="top">
+                <IconButton
+                  aria-label="Download as Markdown"
+                  icon={<Icon as={FiFileText as ComponentType} boxSize="13px" />}
+                  size="xs"
+                  variant="ghost"
+                  color="#fb923c"
+                  _hover={{ bg: 'rgba(249,115,22,0.15)' }}
+                  minW="26px" h="26px"
+                  isLoading={downloadBRDYaml.isPending}
+                  onClick={() => downloadBRDYaml.mutate('md')}
+                />
+              </Tooltip>
+              <Tooltip label="Regenerate BRD from YAML" hasArrow placement="top">
+                <IconButton
+                  aria-label="Regenerate BRD from YAML"
+                  icon={<Icon as={FiRotateCcw as ComponentType} boxSize="13px" />}
+                  size="xs"
+                  variant="ghost"
+                  color="#fb923c"
+                  _hover={{ bg: 'rgba(249,115,22,0.15)' }}
+                  minW="26px" h="26px"
+                  isLoading={generateBRDYaml.isPending}
+                  onClick={() => generateBRDYaml.mutate(true)}
+                />
+              </Tooltip>
+            </HStack>
+          </Flex>
+          <Box flex={1} overflow="auto" px={6} py={4}>
+            <MarkdownRenderer content={brdYamlData.brd_text} variant="vscode" />
+          </Box>
+        </Flex>
+      )}
+
+      {/* BRD from Source: generate CTA */}
+      {showContent === 'generate-brd-source' && (
+        <VStack flex={1} justify="center" align="center" spacing={5} py={16}>
+          <Icon as={FiFileText as ComponentType} boxSize="36px" color="#d97706" opacity={0.7} />
+          <Text fontSize="14px" color={colors.fgMuted} textAlign="center" maxW="360px">
+            Generate a Business Requirements Document using only the original source code.
+          </Text>
+          <Button
+            colorScheme="yellow"
+            size="md"
+            leftIcon={<Icon as={FiPlay as ComponentType} boxSize="14px" />}
+            isLoading={generateBRDSource.isPending}
+            loadingText="Generating…"
+            onClick={() => generateBRDSource.mutate(false)}
+          >
+            Generate BRD from Source
+          </Button>
+        </VStack>
+      )}
+
+      {/* BRD from Source: content view */}
+      {showContent === 'brd-source' && brdSourceData && (
+        <Flex direction="column" flex={1} overflow="hidden" minH={0}>
+          <Flex
+            align="center"
+            justify="space-between"
+            px={4}
+            py="6px"
+            bg="rgba(217,119,6,0.08)"
+            borderBottom="1px solid rgba(217,119,6,0.20)"
+            flexShrink={0}
+          >
+            <Flex align="center" gap={2}>
+              <Icon as={FiFileText as ComponentType} color="#d97706" boxSize="14px" />
+              <Text fontSize="12px" color="#f59e0b" fontWeight="medium">
+                BRD — from Source Code
+              </Text>
+              <Text fontSize="11px" color={colors.fgMuted}>
+                · {brdSourceData.llm_model ?? 'AI'}
+              </Text>
+            </Flex>
+            <HStack spacing={1}>
+              <Tooltip label="Download as Word (.docx)" hasArrow placement="top">
+                <IconButton
+                  aria-label="Download as Word"
+                  icon={<Icon as={FiFileText as ComponentType} boxSize="13px" />}
+                  size="xs"
+                  variant="ghost"
+                  color="#f59e0b"
+                  _hover={{ bg: 'rgba(217,119,6,0.15)' }}
+                  minW="26px" h="26px"
+                  isLoading={downloadBRDSource.isPending}
+                  onClick={() => downloadBRDSource.mutate('docx')}
+                />
+              </Tooltip>
+              <Tooltip label="Download as PDF" hasArrow placement="top">
+                <IconButton
+                  aria-label="Download as PDF"
+                  icon={<Icon as={FiDownload as ComponentType} boxSize="13px" />}
+                  size="xs"
+                  variant="ghost"
+                  color="#f59e0b"
+                  _hover={{ bg: 'rgba(217,119,6,0.15)' }}
+                  minW="26px" h="26px"
+                  isLoading={downloadBRDSource.isPending}
+                  onClick={() => downloadBRDSource.mutate('pdf')}
+                />
+              </Tooltip>
+              <Tooltip label="Download as Markdown (.md)" hasArrow placement="top">
+                <IconButton
+                  aria-label="Download as Markdown"
+                  icon={<Icon as={FiFileText as ComponentType} boxSize="13px" />}
+                  size="xs"
+                  variant="ghost"
+                  color="#f59e0b"
+                  _hover={{ bg: 'rgba(217,119,6,0.15)' }}
+                  minW="26px" h="26px"
+                  isLoading={downloadBRDSource.isPending}
+                  onClick={() => downloadBRDSource.mutate('md')}
+                />
+              </Tooltip>
+              <Tooltip label="Regenerate BRD from Source" hasArrow placement="top">
+                <IconButton
+                  aria-label="Regenerate BRD from Source"
+                  icon={<Icon as={FiRotateCcw as ComponentType} boxSize="13px" />}
+                  size="xs"
+                  variant="ghost"
+                  color="#f59e0b"
+                  _hover={{ bg: 'rgba(217,119,6,0.15)' }}
+                  minW="26px" h="26px"
+                  isLoading={generateBRDSource.isPending}
+                  onClick={() => generateBRDSource.mutate(true)}
+                />
+              </Tooltip>
+            </HStack>
+          </Flex>
+          <Box flex={1} overflow="auto" px={6} py={4}>
+            <MarkdownRenderer content={brdSourceData.brd_text} variant="vscode" />
+          </Box>
+        </Flex>
+      )}
+
+      {/* Source description: content view */}
+      {showContent === 'source-description' && sourceDescriptionData && (
+        <Flex direction="column" flex={1} overflow="hidden" minH={0}>
+          {/* Action bar */}
+          <Flex
+            align="center"
+            justify="space-between"
+            px={4}
+            py="6px"
+            bg="rgba(20,184,166,0.08)"
+            borderBottom="1px solid rgba(20,184,166,0.20)"
+            flexShrink={0}
+          >
+            <Flex align="center" gap={2}>
+              <Icon as={FiCode as ComponentType} color="#14b8a6" boxSize="14px" />
+              <Text fontSize="12px" color="#5eead4" fontWeight="medium">
+                Source Code Description
+              </Text>
+              <Text fontSize="11px" color={colors.fgMuted}>
+                · {sourceDescriptionData.llm_model ?? 'AI'}
+              </Text>
+            </Flex>
+            <HStack spacing={1}>
+              <Tooltip label="Download as Word (.docx)" hasArrow placement="top">
+                <IconButton
+                  aria-label="Download as Word"
+                  icon={<Icon as={FiFileText as ComponentType} boxSize="13px" />}
+                  size="xs"
+                  variant="ghost"
+                  color="#5eead4"
+                  _hover={{ bg: 'rgba(20,184,166,0.15)' }}
+                  minW="26px" h="26px"
+                  isLoading={downloadSourceDescription.isPending}
+                  onClick={() => downloadSourceDescription.mutate('docx' as DescriptionFormat)}
+                />
+              </Tooltip>
+              <Tooltip label="Download as PDF" hasArrow placement="top">
+                <IconButton
+                  aria-label="Download as PDF"
+                  icon={<Icon as={FiDownload as ComponentType} boxSize="13px" />}
+                  size="xs"
+                  variant="ghost"
+                  color="#5eead4"
+                  _hover={{ bg: 'rgba(20,184,166,0.15)' }}
+                  minW="26px" h="26px"
+                  isLoading={downloadSourceDescription.isPending}
+                  onClick={() => downloadSourceDescription.mutate('pdf' as DescriptionFormat)}
+                />
+              </Tooltip>
+              <Tooltip label="Download as Markdown (.md)" hasArrow placement="top">
+                <IconButton
+                  aria-label="Download as Markdown"
+                  icon={<Icon as={FiFileText as ComponentType} boxSize="13px" />}
+                  size="xs"
+                  variant="ghost"
+                  color="#5eead4"
+                  _hover={{ bg: 'rgba(20,184,166,0.15)' }}
+                  minW="26px" h="26px"
+                  isLoading={downloadSourceDescription.isPending}
+                  onClick={() => downloadSourceDescription.mutate('md' as DescriptionFormat)}
+                />
+              </Tooltip>
+              <Tooltip label="Regenerate source description" hasArrow placement="top">
+                <IconButton
+                  aria-label="Regenerate source description"
+                  icon={<Icon as={FiRotateCcw as ComponentType} boxSize="13px" />}
+                  size="xs"
+                  variant="ghost"
+                  color="#5eead4"
+                  _hover={{ bg: 'rgba(20,184,166,0.15)' }}
+                  minW="26px" h="26px"
+                  isLoading={generateSourceDescription.isPending}
+                  onClick={() => generateSourceDescription.mutate(true)}
+                />
+              </Tooltip>
+            </HStack>
+          </Flex>
+          {/* Description text */}
+          <Box
+            flex={1}
+            overflow="auto"
+            px={6}
+            py={4}
+          >
+            <MarkdownRenderer content={sourceDescriptionData.description_text} variant="vscode" />
+          </Box>
+        </Flex>
+      )}
 
       {/* Split view: source ↔ output side-by-side with draggable divider */}
       {showContent === 'content' && !showDiff && showSplit && (

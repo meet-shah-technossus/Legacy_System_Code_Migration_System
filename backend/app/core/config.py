@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     MAX_YAML_RETRY_ATTEMPTS: int = 3
     MAX_CODE_RETRY_ATTEMPTS: int = 2
     LLM_TIMEOUT_SECONDS: int = 60
-    MAX_TOKENS: int = 8000
+    MAX_TOKENS: int = 32_000
     DEFAULT_TEMPERATURE: float = 0.2
     
     # Pagination Defaults

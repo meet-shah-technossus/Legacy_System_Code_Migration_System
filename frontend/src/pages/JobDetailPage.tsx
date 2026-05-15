@@ -75,14 +75,16 @@ import { useRef } from 'react';
 import toast from 'react-hot-toast';
 
 import { useJob, useJobWithSource, useAllowedTransitions, useTransitionJob, useDeleteJob, useUpdateJob } from '../hooks/useJobs';
-import { useYAMLVersions, useGenerateYAML, useApproveYAML, useRegenerateYAML } from '../hooks/useYaml';
+import { useYAMLVersions, useGenerateYAML, useApproveYAML, useRegenerateYAML, useYamlDescription, useGenerateDescription, useDownloadDescription, useSourceDescription, useGenerateSourceDescription, useDownloadSourceDescription, useBRDFromYAML, useGenerateBRDFromYAML, useDownloadBRDFromYAML, useBRDFromSource, useGenerateBRDFromSource, useDownloadBRDFromSource } from '../hooks/useYaml';
 import { useGeneratedCode, useGenerateCode, useCodeHistory, useCodeVersions, useCodeVersion, useRestoreCodeVersion, useDirectRegenerateCode } from '../hooks/useCode';
 import { yamlApi } from '../services/yamlApi';
+import DescriptionDownloadMenu from '../components/common/DescriptionDownloadMenu';
+import MarkdownRenderer from '../components/common/MarkdownRenderer';
 import { codeApi } from '../services/codeApi';
 import { usePrefsStore } from '../store/prefsStore';
 import { stateLabel, stateColorScheme, languageLabel, formatDateTime, formatDate, timeAgo, formatDuration } from '../utils/format';
 import { useAuthStore } from '../store/authStore';
-import type { JobState, YAMLVersionSummary, TargetLanguage, JobType, LLMProvider } from '../types';
+import type { JobState, YAMLVersionSummary, TargetLanguage, JobType, LLMProvider, DescriptionFormat } from '../types';
 import GenerationProcessingOverlay from '../components/vscode/GenerationProcessingOverlay';
 
 // ─── Workflow Steps ───────────────────────────────────────────────────────────
@@ -301,6 +303,7 @@ function YamlVersionsPanel({ jobId, currentState }: { jobId: number; currentStat
   const generateYAML = useGenerateYAML(jobId);
   const regenerateYAML = useRegenerateYAML(jobId);
   const { data: jobForProvider } = useJob(jobId);
+  const { data: jobWithSourceForDesc } = useJobWithSource(jobId);
   const updateJobMeta = useUpdateJob(jobId);
 
   const [selectedVersion, setSelectedVersion] = useState<YAMLVersionSummary | null>(null);
@@ -314,7 +317,39 @@ function YamlVersionsPanel({ jobId, currentState }: { jobId: number; currentStat
   const rowHover = useColorModeValue('gray.50', 'gray.750');
   const selectedBg = useColorModeValue('brand.50', 'brand.900');
 
+  // ── Description hooks & state ──────────────────────────────────────────────
+  const { data: description, isLoading: descLoading } = useYamlDescription(jobId);
+  const generateDescription = useGenerateDescription(jobId);
+  const downloadDescription = useDownloadDescription(jobId, jobForProvider?.source_filename);
+  const [showDescription, setShowDescription] = useState(false);
+  const descBg = useColorModeValue('purple.50', 'purple.900');
+
+  // ── Source description hooks & state ──────────────────────────────────────
+  const { data: sourceDescription, isLoading: srcDescLoading } = useSourceDescription(jobId);
+  const generateSourceDescription = useGenerateSourceDescription(jobId);
+  const downloadSourceDescription = useDownloadSourceDescription(jobId, jobForProvider?.source_filename);
+  const [showSourceDescription, setShowSourceDescription] = useState(false);
+  const srcDescBg = useColorModeValue('teal.50', 'teal.900');
+
+  // ── BRD from YAML hooks & state ───────────────────────────────────────────
+  const { data: brdYaml, isLoading: brdYamlLoading } = useBRDFromYAML(jobId);
+  const generateBRDYaml = useGenerateBRDFromYAML(jobId);
+  const downloadBRDYaml = useDownloadBRDFromYAML(jobId, jobForProvider?.source_filename);
+  const [showBRDYaml, setShowBRDYaml] = useState(false);
+  const brdYamlBg = useColorModeValue('orange.50', 'orange.900');
+
+  // ── BRD from Source hooks & state ─────────────────────────────────────────
+  const { data: brdSource, isLoading: brdSourceLoading } = useBRDFromSource(jobId);
+  const generateBRDSource = useGenerateBRDFromSource(jobId);
+  const downloadBRDSource = useDownloadBRDFromSource(jobId, jobForProvider?.source_filename);
+  const [showBRDSource, setShowBRDSource] = useState(false);
+  const brdSourceBg = useColorModeValue('yellow.50', 'yellow.900');
+
   const handleSelectVersion = async (v: YAMLVersionSummary) => {
+    setShowDescription(false);
+    setShowSourceDescription(false);
+    setShowBRDYaml(false);
+    setShowBRDSource(false);
     setSelectedVersion(v);
     setYamlContent('');
     try {
@@ -342,6 +377,10 @@ function YamlVersionsPanel({ jobId, currentState }: { jobId: number; currentStat
 
   const canGenerate = currentState === 'CREATED';
   const canRegenerate = currentState === 'REGENERATE_REQUESTED';
+  // Show description controls whenever at least one YAML version is approved
+  const canGenerateDescription = versions?.some((v) => v.is_approved) ?? false;
+  // Source description is available whenever the job has source code (file upload or manual paste)
+  const hasSourceCode = !!(jobForProvider?.source_filename || jobWithSourceForDesc?.original_source_code);
   const [regenYAMLProvider, setRegenYAMLProvider] = useState<LLMProvider>('OPENAI');
   const [generateYAMLProvider, setGenerateYAMLProvider] = useState<LLMProvider>('OPENAI');
 
@@ -430,6 +469,61 @@ function YamlVersionsPanel({ jobId, currentState }: { jobId: number; currentStat
             Approve v{selectedVersion.version_number}
           </Button>
         )}
+        {canGenerateDescription && (
+          <>
+            <DescriptionDownloadMenu jobId={jobId} sourceFilename={jobForProvider?.source_filename} />
+            <Button
+              size="sm"
+              variant="outline"
+              colorScheme="orange"
+              leftIcon={<Icon as={FiFileText} />}
+              isLoading={generateBRDYaml.isPending}
+              loadingText="Generating…"
+              onClick={() => generateBRDYaml.mutate(!!brdYaml)}
+            >
+              {brdYaml ? 'Regen BRD (YAML)' : 'BRD from YAML'}
+            </Button>
+            {brdYaml && (
+              <Menu>
+                <MenuButton as={Button} size="sm" colorScheme="orange" variant="ghost" rightIcon={<FiChevronDown />} leftIcon={<Icon as={FiDownload} />}>
+                  DL BRD (YAML)
+                </MenuButton>
+                <MenuList fontSize="sm" minW="180px" zIndex={10}>
+                  <MenuItem icon={<Icon as={FiFileText} />} onClick={() => downloadBRDYaml.mutate('docx')}>Word (.docx)</MenuItem>
+                  <MenuItem icon={<Icon as={FiDownload} />} onClick={() => downloadBRDYaml.mutate('pdf')}>PDF (.pdf)</MenuItem>
+                  <MenuItem icon={<Icon as={FiFileText} />} onClick={() => downloadBRDYaml.mutate('md')}>Markdown (.md)</MenuItem>
+                </MenuList>
+              </Menu>
+            )}
+          </>
+        )}
+        {hasSourceCode && (
+          <>
+            <Button
+              size="sm"
+              variant="outline"
+              colorScheme="yellow"
+              leftIcon={<Icon as={FiFileText} />}
+              isLoading={generateBRDSource.isPending}
+              loadingText="Generating…"
+              onClick={() => generateBRDSource.mutate(!!brdSource)}
+            >
+              {brdSource ? 'Regen BRD (Source)' : 'BRD from Source'}
+            </Button>
+            {brdSource && (
+              <Menu>
+                <MenuButton as={Button} size="sm" colorScheme="yellow" variant="ghost" rightIcon={<FiChevronDown />} leftIcon={<Icon as={FiDownload} />}>
+                  DL BRD (Source)
+                </MenuButton>
+                <MenuList fontSize="sm" minW="180px" zIndex={10}>
+                  <MenuItem icon={<Icon as={FiFileText} />} onClick={() => downloadBRDSource.mutate('docx')}>Word (.docx)</MenuItem>
+                  <MenuItem icon={<Icon as={FiDownload} />} onClick={() => downloadBRDSource.mutate('pdf')}>PDF (.pdf)</MenuItem>
+                  <MenuItem icon={<Icon as={FiFileText} />} onClick={() => downloadBRDSource.mutate('md')}>Markdown (.md)</MenuItem>
+                </MenuList>
+              </Menu>
+            )}
+          </>
+        )}
       </HStack>
 
       {isLoading ? (
@@ -498,11 +592,458 @@ function YamlVersionsPanel({ jobId, currentState }: { jobId: number; currentStat
                 )}
               </Box>
             ))}
+            {/* Description entry in sidebar */}
+            {canGenerateDescription && (
+              <>
+                <Box bg={codeBg} px={3} py={2} borderBottom="1px solid" borderColor={borderColor} borderTop="1px solid">
+                  <Text fontSize="xs" fontWeight="semibold" color="gray.500" textTransform="uppercase">
+                    Description
+                  </Text>
+                </Box>
+                <Box
+                  px={3}
+                  py={2.5}
+                  cursor="pointer"
+                  bg={showDescription ? descBg : undefined}
+                  _hover={{ bg: showDescription ? descBg : rowHover }}
+                  borderBottom="1px solid"
+                  borderColor={borderColor}
+                  onClick={() => { setShowDescription(true); setShowSourceDescription(false); setShowBRDYaml(false); setShowBRDSource(false); setSelectedVersion(null); }}
+                  transition="background 0.1s"
+                >
+                  <Flex justify="space-between" align="center">
+                    <HStack spacing={2}>
+                      <Icon as={FiFileText} color="purple.400" boxSize={3.5} />
+                      <Text fontSize="sm" fontWeight="medium">
+                        FRS
+                      </Text>
+                    </HStack>
+                    {description ? (
+                      <Badge colorScheme="purple" fontSize="xs" variant="subtle">Generated</Badge>
+                    ) : (
+                      <Badge colorScheme="gray" fontSize="xs" variant="subtle">Not Generated</Badge>
+                    )}
+                  </Flex>
+                  {description && (
+                    <Text fontSize="xs" color="gray.500" mt={0.5}>
+                      {description.llm_model ?? 'AI'} · {useAbsoluteTimestamps ? formatDateTime(description.generated_at) : timeAgo(description.generated_at)}
+                    </Text>
+                  )}
+                </Box>
+              </>
+            )}
+            {/* Source description entry in sidebar */}
+            {hasSourceCode && (
+              <>
+                <Box bg={codeBg} px={3} py={2} borderBottom="1px solid" borderColor={borderColor} borderTop="1px solid">
+                  <Text fontSize="xs" fontWeight="semibold" color="gray.500" textTransform="uppercase">
+                    Source Description
+                  </Text>
+                </Box>
+                <Box
+                  px={3}
+                  py={2.5}
+                  cursor="pointer"
+                  bg={showSourceDescription ? srcDescBg : undefined}
+                  _hover={{ bg: showSourceDescription ? srcDescBg : rowHover }}
+                  borderBottom="1px solid"
+                  borderColor={borderColor}
+                  onClick={() => { setShowSourceDescription(true); setShowDescription(false); setShowBRDYaml(false); setShowBRDSource(false); setSelectedVersion(null); }}
+                  transition="background 0.1s"
+                >
+                  <Flex justify="space-between" align="center">
+                    <HStack spacing={2}>
+                      <Icon as={FiCode} color="teal.400" boxSize={3.5} />
+                      <Text fontSize="sm" fontWeight="medium">
+                        Source Code Description
+                      </Text>
+                    </HStack>
+                    {sourceDescription ? (
+                      <Badge colorScheme="teal" fontSize="xs" variant="subtle">Generated</Badge>
+                    ) : (
+                      <Badge colorScheme="gray" fontSize="xs" variant="subtle">Not Generated</Badge>
+                    )}
+                  </Flex>
+                  {sourceDescription && (
+                    <Text fontSize="xs" color="gray.500" mt={0.5}>
+                      {sourceDescription.llm_model ?? 'AI'} · {useAbsoluteTimestamps ? formatDateTime(sourceDescription.generated_at) : timeAgo(sourceDescription.generated_at)}
+                    </Text>
+                  )}
+                </Box>
+              </>
+            )}
+            {/* BRD from YAML entry in sidebar */}
+            {canGenerateDescription && (
+              <>
+                <Box bg={codeBg} px={3} py={2} borderBottom="1px solid" borderColor={borderColor} borderTop="1px solid">
+                  <Text fontSize="xs" fontWeight="semibold" color="gray.500" textTransform="uppercase">
+                    BRD (from YAML)
+                  </Text>
+                </Box>
+                <Box
+                  px={3}
+                  py={2.5}
+                  cursor="pointer"
+                  bg={showBRDYaml ? brdYamlBg : undefined}
+                  _hover={{ bg: showBRDYaml ? brdYamlBg : rowHover }}
+                  borderBottom="1px solid"
+                  borderColor={borderColor}
+                  onClick={() => { setShowBRDYaml(true); setShowBRDSource(false); setShowDescription(false); setShowSourceDescription(false); setSelectedVersion(null); }}
+                  transition="background 0.1s"
+                >
+                  <Flex justify="space-between" align="center">
+                    <HStack spacing={2}>
+                      <Icon as={FiFileText} color="orange.400" boxSize={3.5} />
+                      <Text fontSize="sm" fontWeight="medium">BRD from YAML</Text>
+                    </HStack>
+                    {brdYaml ? (
+                      <Badge colorScheme="orange" fontSize="xs" variant="subtle">Generated</Badge>
+                    ) : (
+                      <Badge colorScheme="gray" fontSize="xs" variant="subtle">Not Generated</Badge>
+                    )}
+                  </Flex>
+                  {brdYaml && (
+                    <Text fontSize="xs" color="gray.500" mt={0.5}>
+                      {brdYaml.llm_model ?? 'AI'} · {useAbsoluteTimestamps ? formatDateTime(brdYaml.generated_at) : timeAgo(brdYaml.generated_at)}
+                    </Text>
+                  )}
+                </Box>
+              </>
+            )}
+            {/* BRD from Source Code entry in sidebar */}
+            {hasSourceCode && (
+              <>
+                <Box bg={codeBg} px={3} py={2} borderBottom="1px solid" borderColor={borderColor} borderTop="1px solid">
+                  <Text fontSize="xs" fontWeight="semibold" color="gray.500" textTransform="uppercase">
+                    BRD (from Source)
+                  </Text>
+                </Box>
+                <Box
+                  px={3}
+                  py={2.5}
+                  cursor="pointer"
+                  bg={showBRDSource ? brdSourceBg : undefined}
+                  _hover={{ bg: showBRDSource ? brdSourceBg : rowHover }}
+                  borderBottom="1px solid"
+                  borderColor={borderColor}
+                  onClick={() => { setShowBRDSource(true); setShowBRDYaml(false); setShowDescription(false); setShowSourceDescription(false); setSelectedVersion(null); }}
+                  transition="background 0.1s"
+                >
+                  <Flex justify="space-between" align="center">
+                    <HStack spacing={2}>
+                      <Icon as={FiCode} color="yellow.500" boxSize={3.5} />
+                      <Text fontSize="sm" fontWeight="medium">BRD from Source</Text>
+                    </HStack>
+                    {brdSource ? (
+                      <Badge colorScheme="yellow" fontSize="xs" variant="subtle">Generated</Badge>
+                    ) : (
+                      <Badge colorScheme="gray" fontSize="xs" variant="subtle">Not Generated</Badge>
+                    )}
+                  </Flex>
+                  {brdSource && (
+                    <Text fontSize="xs" color="gray.500" mt={0.5}>
+                      {brdSource.llm_model ?? 'AI'} · {useAbsoluteTimestamps ? formatDateTime(brdSource.generated_at) : timeAgo(brdSource.generated_at)}
+                    </Text>
+                  )}
+                </Box>
+              </>
+            )}
           </Box>
 
-          {/* YAML content */}
+          {/* Content panel — YAML version OR Description(s) */}
           <Box>
-            {selectedVersion ? (
+            {showSourceDescription ? (
+              /* ── Source Description view ──────────────────────────────── */
+              <>
+                <Flex justify="space-between" align="center" mb={2}>
+                  <HStack spacing={2}>
+                    <Icon as={FiCode} color="teal.400" />
+                    <Text fontSize="sm" fontWeight="medium" color="gray.400">
+                      Source Code Description
+                    </Text>
+                    {sourceDescription && (
+                      <Text fontSize="xs" color="teal.300">
+                        · {sourceDescription.llm_model ?? 'AI'}
+                      </Text>
+                    )}
+                  </HStack>
+                  {sourceDescription && (
+                    <HStack spacing={1}>
+                      <Menu>
+                        <MenuButton
+                          as={IconButton}
+                          aria-label="Download source description"
+                          icon={<FiDownload />}
+                          size="xs"
+                          variant="ghost"
+                          colorScheme="teal"
+                          isLoading={downloadSourceDescription.isPending}
+                        />
+                        <MenuList fontSize="sm" minW="180px" zIndex={10}>
+                          <MenuItem icon={<Icon as={FiFileText} />} onClick={() => downloadSourceDescription.mutate('docx' as DescriptionFormat)}>
+                            Word (.docx)
+                          </MenuItem>
+                          <MenuItem icon={<Icon as={FiDownload} />} onClick={() => downloadSourceDescription.mutate('pdf' as DescriptionFormat)}>
+                            PDF (.pdf)
+                          </MenuItem>
+                          <MenuItem icon={<Icon as={FiFileText} />} onClick={() => downloadSourceDescription.mutate('md' as DescriptionFormat)}>
+                            Markdown (.md)
+                          </MenuItem>
+                        </MenuList>
+                      </Menu>
+                      <Tooltip label="Regenerate source description" hasArrow>
+                        <IconButton
+                          aria-label="Regenerate source description"
+                          icon={<FiRefreshCw />}
+                          size="xs"
+                          variant="ghost"
+                          colorScheme="teal"
+                          isLoading={generateSourceDescription.isPending}
+                          onClick={() => generateSourceDescription.mutate(true)}
+                        />
+                      </Tooltip>
+                      <Tooltip label="Copy source description" hasArrow>
+                        <IconButton
+                          aria-label="Copy source description"
+                          icon={<FiCopy />}
+                          size="xs"
+                          variant="ghost"
+                          onClick={() => {
+                            if (sourceDescription.description_text) {
+                              navigator.clipboard.writeText(sourceDescription.description_text);
+                              toast.success('Source description copied to clipboard');
+                            }
+                          }}
+                        />
+                      </Tooltip>
+                    </HStack>
+                  )}
+                </Flex>
+                {srcDescLoading ? (
+                  <SkeletonText noOfLines={8} spacing={3} />
+                ) : sourceDescription ? (
+                  <Box
+                    bg={codeBg}
+                    border="1px solid"
+                    borderColor={borderColor}
+                    borderRadius="lg"
+                    p={4}
+                    overflowX="auto"
+                    maxH="550px"
+                    overflowY="auto"
+                  >
+                    <MarkdownRenderer content={sourceDescription.description_text} />
+                  </Box>
+                ) : (
+                  <Flex direction="column" align="center" justify="center" h="200px" gap={3}>
+                    <Icon as={FiCode} boxSize={8} color="gray.500" />
+                    <Text color="gray.500" fontSize="sm">No source description generated yet</Text>
+                    <Button
+                      leftIcon={<FiZap />}
+                      colorScheme="teal"
+                      size="sm"
+                      isLoading={generateSourceDescription.isPending}
+                      loadingText="Generating…"
+                      onClick={() => generateSourceDescription.mutate(false)}
+                    >
+                      Generate Source Description
+                    </Button>
+                  </Flex>
+                )}
+              </>
+            ) : showBRDYaml ? (
+              /* ── BRD (from YAML) view ─────────────────────────────────── */
+              <>
+                <Flex justify="space-between" align="center" mb={2}>
+                  <HStack spacing={2}>
+                    <Icon as={FiFileText} color="orange.400" />
+                    <Text fontSize="sm" fontWeight="medium" color="gray.400">
+                      BRD — from Approved YAML
+                    </Text>
+                    {brdYaml && <Text fontSize="xs" color="orange.300">· {brdYaml.llm_model ?? 'AI'}</Text>}
+                  </HStack>
+                  {brdYaml && (
+                    <HStack spacing={1}>
+                      <Menu>
+                        <MenuButton as={IconButton} aria-label="Download BRD (YAML)" icon={<FiDownload />} size="xs" variant="ghost" colorScheme="orange" isLoading={downloadBRDYaml.isPending} />
+                        <MenuList fontSize="sm" minW="180px" zIndex={10}>
+                          <MenuItem icon={<Icon as={FiFileText} />} onClick={() => downloadBRDYaml.mutate('docx')}>Word (.docx)</MenuItem>
+                          <MenuItem icon={<Icon as={FiDownload} />} onClick={() => downloadBRDYaml.mutate('pdf')}>PDF (.pdf)</MenuItem>
+                          <MenuItem icon={<Icon as={FiFileText} />} onClick={() => downloadBRDYaml.mutate('md')}>Markdown (.md)</MenuItem>
+                        </MenuList>
+                      </Menu>
+                      <Tooltip label="Regenerate BRD (YAML)" hasArrow>
+                        <IconButton aria-label="Regenerate BRD (YAML)" icon={<FiRefreshCw />} size="xs" variant="ghost" colorScheme="orange" isLoading={generateBRDYaml.isPending} onClick={() => generateBRDYaml.mutate(true)} />
+                      </Tooltip>
+                      <Tooltip label="Copy BRD" hasArrow>
+                        <IconButton aria-label="Copy BRD" icon={<FiCopy />} size="xs" variant="ghost" onClick={() => { if (brdYaml.brd_text) { navigator.clipboard.writeText(brdYaml.brd_text); toast.success('BRD copied'); } }} />
+                      </Tooltip>
+                    </HStack>
+                  )}
+                </Flex>
+                {brdYamlLoading ? (
+                  <SkeletonText noOfLines={8} spacing={3} />
+                ) : brdYaml ? (
+                  <Box bg={codeBg} border="1px solid" borderColor={borderColor} borderRadius="lg" p={4} overflowX="auto" maxH="550px" overflowY="auto">
+                    <MarkdownRenderer content={brdYaml.brd_text} />
+                  </Box>
+                ) : (
+                  <Flex direction="column" align="center" justify="center" h="200px" gap={3}>
+                    <Icon as={FiFileText} boxSize={8} color="gray.500" />
+                    <Text color="gray.500" fontSize="sm">No BRD generated yet from YAML</Text>
+                    <Button leftIcon={<FiZap />} colorScheme="orange" size="sm" isLoading={generateBRDYaml.isPending} loadingText="Generating…" onClick={() => generateBRDYaml.mutate(false)}>
+                      Generate BRD from YAML
+                    </Button>
+                  </Flex>
+                )}
+              </>
+            ) : showBRDSource ? (
+              /* ── BRD (from Source Code) view ──────────────────────────── */
+              <>
+                <Flex justify="space-between" align="center" mb={2}>
+                  <HStack spacing={2}>
+                    <Icon as={FiCode} color="yellow.500" />
+                    <Text fontSize="sm" fontWeight="medium" color="gray.400">
+                      BRD — from Source Code
+                    </Text>
+                    {brdSource && <Text fontSize="xs" color="yellow.300">· {brdSource.llm_model ?? 'AI'}</Text>}
+                  </HStack>
+                  {brdSource && (
+                    <HStack spacing={1}>
+                      <Menu>
+                        <MenuButton as={IconButton} aria-label="Download BRD (Source)" icon={<FiDownload />} size="xs" variant="ghost" colorScheme="yellow" isLoading={downloadBRDSource.isPending} />
+                        <MenuList fontSize="sm" minW="180px" zIndex={10}>
+                          <MenuItem icon={<Icon as={FiFileText} />} onClick={() => downloadBRDSource.mutate('docx')}>Word (.docx)</MenuItem>
+                          <MenuItem icon={<Icon as={FiDownload} />} onClick={() => downloadBRDSource.mutate('pdf')}>PDF (.pdf)</MenuItem>
+                          <MenuItem icon={<Icon as={FiFileText} />} onClick={() => downloadBRDSource.mutate('md')}>Markdown (.md)</MenuItem>
+                        </MenuList>
+                      </Menu>
+                      <Tooltip label="Regenerate BRD (Source)" hasArrow>
+                        <IconButton aria-label="Regenerate BRD (Source)" icon={<FiRefreshCw />} size="xs" variant="ghost" colorScheme="yellow" isLoading={generateBRDSource.isPending} onClick={() => generateBRDSource.mutate(true)} />
+                      </Tooltip>
+                      <Tooltip label="Copy BRD" hasArrow>
+                        <IconButton aria-label="Copy BRD" icon={<FiCopy />} size="xs" variant="ghost" onClick={() => { if (brdSource.brd_text) { navigator.clipboard.writeText(brdSource.brd_text); toast.success('BRD copied'); } }} />
+                      </Tooltip>
+                    </HStack>
+                  )}
+                </Flex>
+                {brdSourceLoading ? (
+                  <SkeletonText noOfLines={8} spacing={3} />
+                ) : brdSource ? (
+                  <Box bg={codeBg} border="1px solid" borderColor={borderColor} borderRadius="lg" p={4} overflowX="auto" maxH="550px" overflowY="auto">
+                    <MarkdownRenderer content={brdSource.brd_text} />
+                  </Box>
+                ) : (
+                  <Flex direction="column" align="center" justify="center" h="200px" gap={3}>
+                    <Icon as={FiCode} boxSize={8} color="gray.500" />
+                    <Text color="gray.500" fontSize="sm">No BRD generated yet from Source Code</Text>
+                    <Button leftIcon={<FiZap />} colorScheme="yellow" size="sm" isLoading={generateBRDSource.isPending} loadingText="Generating…" onClick={() => generateBRDSource.mutate(false)}>
+                      Generate BRD from Source
+                    </Button>
+                  </Flex>
+                )}
+              </>
+            ) : showDescription ? (
+              /* ── Description view ─────────────────────────────────────── */
+              <>
+                <Flex justify="space-between" align="center" mb={2}>
+                  <HStack spacing={2}>
+                    <Icon as={FiFileText} color="purple.400" />
+                    <Text fontSize="sm" fontWeight="medium" color="gray.400">
+                      Functional Requirements Specification (FRS)
+                    </Text>
+                    {description && (
+                      <Text fontSize="xs" color="purple.300">
+                        · {description.llm_model ?? 'AI'}
+                      </Text>
+                    )}
+                  </HStack>
+                  {description && (
+                    <HStack spacing={1}>
+                      <Menu>
+                        <MenuButton
+                          as={IconButton}
+                          aria-label="Download description"
+                          icon={<FiDownload />}
+                          size="xs"
+                          variant="ghost"
+                          colorScheme="purple"
+                          isLoading={downloadDescription.isPending}
+                        />
+                        <MenuList fontSize="sm" minW="180px" zIndex={10}>
+                          <MenuItem icon={<Icon as={FiFileText} />} onClick={() => downloadDescription.mutate('docx' as DescriptionFormat)}>
+                            Word (.docx)
+                          </MenuItem>
+                          <MenuItem icon={<Icon as={FiDownload} />} onClick={() => downloadDescription.mutate('pdf' as DescriptionFormat)}>
+                            PDF (.pdf)
+                          </MenuItem>
+                          <MenuItem icon={<Icon as={FiFileText} />} onClick={() => downloadDescription.mutate('md' as DescriptionFormat)}>
+                            Markdown (.md)
+                          </MenuItem>
+                        </MenuList>
+                      </Menu>
+                      <Tooltip label="Regenerate description" hasArrow>
+                        <IconButton
+                          aria-label="Regenerate description"
+                          icon={<FiRefreshCw />}
+                          size="xs"
+                          variant="ghost"
+                          colorScheme="purple"
+                          isLoading={generateDescription.isPending}
+                          onClick={() => generateDescription.mutate(true)}
+                        />
+                      </Tooltip>
+                      <Tooltip label="Copy description" hasArrow>
+                        <IconButton
+                          aria-label="Copy description"
+                          icon={<FiCopy />}
+                          size="xs"
+                          variant="ghost"
+                          onClick={() => {
+                            if (description.description_text) {
+                              navigator.clipboard.writeText(description.description_text);
+                              toast.success('Description copied to clipboard');
+                            }
+                          }}
+                        />
+                      </Tooltip>
+                    </HStack>
+                  )}
+                </Flex>
+                {descLoading ? (
+                  <SkeletonText noOfLines={8} spacing={3} />
+                ) : description ? (
+                  <Box
+                    bg={codeBg}
+                    border="1px solid"
+                    borderColor={borderColor}
+                    borderRadius="lg"
+                    p={4}
+                    overflowX="auto"
+                    maxH="550px"
+                    overflowY="auto"
+                  >
+                    <MarkdownRenderer content={description.description_text} />
+                  </Box>
+                ) : (
+                  <Flex direction="column" align="center" justify="center" h="200px" gap={3}>
+                    <Icon as={FiFileText} boxSize={8} color="gray.500" />
+                    <Text color="gray.500" fontSize="sm">No description generated yet</Text>
+                    <Button
+                      leftIcon={<FiZap />}
+                      colorScheme="purple"
+                      size="sm"
+                      isLoading={generateDescription.isPending}
+                      loadingText="Generating…"
+                      onClick={() => generateDescription.mutate(false)}
+                    >
+                      Generate Description
+                    </Button>
+                  </Flex>
+                )}
+              </>
+            ) : selectedVersion ? (
+              /* ── YAML version view ────────────────────────────────────── */
               <>
                 <Flex justify="space-between" align="center" mb={2}>
                   <HStack spacing={2}>
@@ -545,7 +1086,7 @@ function YamlVersionsPanel({ jobId, currentState }: { jobId: number; currentStat
               </>
             ) : (
               <Flex align="center" justify="center" h="200px">
-                <Text color="gray.500" fontSize="sm">Select a version to view its content</Text>
+                <Text color="gray.500" fontSize="sm">Select a version, FRS, or BRD to view</Text>
               </Flex>
             )}
           </Box>

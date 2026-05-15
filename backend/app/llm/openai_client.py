@@ -66,6 +66,9 @@ class OpenAIClient:
         try:
             # Resolve model name at call time so DB changes take effect without restart
             active_model = get_config_value(KEY_OPENAI_MODEL, self.model_name)
+            # Keep self.model_name in sync so callers (e.g. llm_metadata) see the
+            # actual model that was used, not the stale startup default.
+            self.model_name = active_model
             response = self.client.chat.completions.create(
                 model=active_model,
                 messages=[{"role": "user", "content": prompt}],

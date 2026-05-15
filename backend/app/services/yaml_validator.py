@@ -1,5 +1,6 @@
 """YAML validation service for validating generated YAML against strict schema."""
 
+import re
 import yaml
 from typing import Tuple, List, Dict, Any, Optional
 from pydantic import ValidationError
@@ -52,13 +53,19 @@ class YAMLValidator:
         else:
             content = raw_content.strip()
 
-        # Remove markdown code blocks if present
+        # Extract YAML from a fenced code block anywhere in the response.
+        # Models like claude-3.7-sonnet often add a preamble sentence before the block.
+        fence_match = re.search(r"```(?:yaml|yml)?\s*\n(.*?)```", content, re.DOTALL)
+        if fence_match:
+            return fence_match.group(1).strip()
+
+        # No fenced block found — fall back to stripping leading/trailing fences
         if content.startswith("```yaml"):
-            content = content[7:]  # Remove ```yaml
+            content = content[7:]
         elif content.startswith("```yml"):
-            content = content[6:]  # Remove ```yml
+            content = content[6:]
         elif content.startswith("```"):
-            content = content[3:]  # Remove ```
+            content = content[3:]
 
         if content.endswith("```"):
             content = content[:-3]

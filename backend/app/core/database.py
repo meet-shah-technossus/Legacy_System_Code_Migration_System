@@ -62,6 +62,7 @@ def init_db():
         SystemConfig,  # noqa: F401 — registers system_configs table
     )
     from app.models.user import User  # noqa: F401 — registers users table
+    from app.models.brd import JobBRD  # noqa: F401 — registers job_brds table
 
     Base.metadata.create_all(bind=engine)
     _safe_add_columns()
@@ -109,5 +110,17 @@ def _safe_add_columns():
         if col not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
             conn.commit()
+
+    # job_brds needs generation_source column; if absent the table has the old
+    # schema (unique on job_id only). Drop and let create_all() recreate it.
+    brds_cols = existing_columns("job_brds")
+    if brds_cols and "generation_source" not in brds_cols:
+        conn.execute("DROP TABLE IF EXISTS job_brds")
+        conn.commit()
+        # Recreate via SQLAlchemy so indexes/constraints are correct
+        from app.models.brd import JobBRD as _JobBRD  # noqa: F401
+        from sqlalchemy import text as _text
+        with engine.connect() as sa_conn:
+            Base.metadata.tables["job_brds"].create(bind=engine, checkfirst=True)
 
     conn.close()

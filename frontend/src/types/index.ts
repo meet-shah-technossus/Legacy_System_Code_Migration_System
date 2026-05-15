@@ -277,6 +277,45 @@ export interface YAMLStatistics {
   has_approved_version: boolean;
 }
 
+/** Cached plain-English description of an approved YAML */
+export interface YAMLDescription {
+  id: number;
+  job_id: number;
+  yaml_version_id: number;
+  description_text: string;
+  llm_provider: string | null;
+  llm_model: string | null;
+  generated_by: string | null;
+  generated_at: string;
+}
+
+/** Cached plain-English description generated from Pick Basic source code */
+export interface SourceDescription {
+  id: number;
+  job_id: number;
+  description_text: string;
+  llm_provider: string | null;
+  llm_model: string | null;
+  generated_by: string | null;
+  generated_at: string;
+}
+
+/** Cached Business Requirements Document (BRD) for a job */
+export interface JobBRD {
+  id: number;
+  job_id: number;
+  yaml_version_id: number | null;
+  generation_source: 'yaml' | 'source_code';
+  brd_text: string;
+  llm_provider: string | null;
+  llm_model: string | null;
+  generated_by: string | null;
+  generated_at: string;
+}
+
+/** Format for description document download */
+export type DescriptionFormat = 'docx' | 'pdf' | 'md';
+
 // ─── Code ────────────────────────────────────────────────────────────────────
 
 export interface GeneratedCode {

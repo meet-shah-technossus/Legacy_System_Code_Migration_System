@@ -5,6 +5,9 @@ All SQLAlchemy models are imported here for proper registration.
 
 from app.models.job import MigrationJob
 from app.models.yaml_version import YAMLVersion
+from app.models.yaml_description import YAMLDescription
+from app.models.source_description import SourceDescription
+from app.models.brd import JobBRD
 from app.models.review import Review, ReviewComment
 from app.models.code import GeneratedCode
 from app.models.code_review import CodeReview
@@ -16,6 +19,8 @@ from app.models.system_config import SystemConfig
 __all__ = [
     "MigrationJob",
     "YAMLVersion",
+    "YAMLDescription",
+    "SourceDescription",
     "Review",
     "ReviewComment",
     "GeneratedCode",
@@ -24,4 +29,5 @@ __all__ = [
     "Metric",
     "LineComment",
     "SystemConfig",
+    "JobBRD",
 ]

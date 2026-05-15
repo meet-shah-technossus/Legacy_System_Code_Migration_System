@@ -136,5 +136,14 @@ class AuditAction(str, Enum):
     # Error tracking
     ERROR_OCCURRED = "ERROR_OCCURRED"
     
+    # YAML Description
+    DESCRIPTION_GENERATED = "DESCRIPTION_GENERATED"
+
+    # Source Code Description
+    SOURCE_DESCRIPTION_GENERATED = "SOURCE_DESCRIPTION_GENERATED"
+
+    # Business Requirements Document
+    BRD_GENERATED = "BRD_GENERATED"
+
     # System events
     SYSTEM_HEALTH_CHECK = "SYSTEM_HEALTH_CHECK"

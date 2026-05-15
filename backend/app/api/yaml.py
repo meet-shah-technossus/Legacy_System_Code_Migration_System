@@ -1,14 +1,20 @@
 """API endpoints for YAML generation and version management."""
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from io import BytesIO
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from typing import List, Optional
+from typing import List, Literal, Optional
 from pydantic import BaseModel, Field
 
 from app.core.database import get_db
 from app.core.enums import LLMProvider
 from app.services.yaml_service import YAMLService
+from app.services.auth_service import get_current_active_user
 from app.models.yaml_version import YAMLVersion
+from app.models.job import MigrationJob
+from app.models.user import User
 
 
 router = APIRouter()
@@ -410,5 +416,514 @@ def regenerate_yaml_with_feedback(
         additional_instructions=request.additional_instructions,
         llm_provider=request.llm_provider,
     )
-    
+
     return YAMLVersionResponse.from_orm(yaml_version)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Helpers shared by description endpoints
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _get_job_or_404(db: Session, job_id: int) -> MigrationJob:
+    """Load a MigrationJob or raise 404."""
+    job = db.get(MigrationJob, job_id)
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job {job_id} not found.",
+        )
+    return job
+
+
+def _require_job_access(job: MigrationJob, current_user: User) -> None:
+    """Raise 403 if a non-admin user tries to access a job they do not own."""
+    if current_user.role.value == "admin":
+        return
+    if job.created_by != current_user.username:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to access this job.",
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Description generation & download endpoints
+# ─────────────────────────────────────────────────────────────────────────────
+
+class YAMLDescriptionGenerateRequest(BaseModel):
+    """Request body for description generation."""
+    force_regenerate: bool = Field(
+        default=False,
+        description="Re-generate even if a cached description already exists.",
+    )
+
+
+@router.post(
+    "/jobs/{job_id}/yaml/description/generate",
+    summary="Generate plain-English description of approved YAML",
+    description=(
+        "Uses the same LLM that produced the job's approved YAML to generate a "
+        "detailed, Markdown-formatted description covering all variables, subroutines, "
+        "business rules, data flow, and migration considerations. "
+        "The result is cached; pass force_regenerate=true to overwrite it."
+    ),
+    status_code=status.HTTP_200_OK,
+)
+def generate_yaml_description(
+    job_id: int,
+    request: YAMLDescriptionGenerateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Generate (or regenerate) the plain-English description for a job's approved YAML."""
+    from app.services.description_generator import DescriptionGenerator
+    from app.schemas.yaml_schema import YAMLDescriptionResponse
+
+    job = _get_job_or_404(db, job_id)
+    _require_job_access(job, current_user)
+
+    description = DescriptionGenerator().generate_description(
+        db=db,
+        job_id=job_id,
+        performed_by=current_user.username,
+        force_regenerate=request.force_regenerate,
+    )
+    return YAMLDescriptionResponse.model_validate(description)
+
+
+@router.get(
+    "/jobs/{job_id}/yaml/description",
+    summary="Get cached YAML description",
+    description=(
+        "Returns the previously generated plain-English description for the job's "
+        "approved YAML. Returns 404 if the description has not been generated yet — "
+        "call POST /description/generate first."
+    ),
+)
+def get_yaml_description(
+    job_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Return the cached description for a job's approved YAML."""
+    from app.services.description_generator import DescriptionGenerator
+    from app.schemas.yaml_schema import YAMLDescriptionResponse
+
+    job = _get_job_or_404(db, job_id)
+    _require_job_access(job, current_user)
+
+    description = DescriptionGenerator().get_existing_description(db, job_id)
+    if not description:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"No description found for job {job_id}. "
+                "Call POST /jobs/{job_id}/yaml/description/generate first."
+            ),
+        )
+    return YAMLDescriptionResponse.model_validate(description)
+
+
+@router.get(
+    "/jobs/{job_id}/yaml/description/download",
+    summary="Download YAML description as DOCX or PDF",
+    description=(
+        "Streams the cached plain-English description as a formatted Word document "
+        "(.docx) or PDF file. Pass ?format=docx or ?format=pdf. "
+        "Returns 404 if the description has not been generated yet."
+    ),
+    response_class=StreamingResponse,
+)
+def download_yaml_description(
+    job_id: int,
+    format: Literal["docx", "pdf", "md"] = Query(
+        default="docx",
+        description="Output format: 'docx' (Word), 'pdf', or 'md' (Markdown).",
+    ),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Stream the description document as a DOCX or PDF download."""
+    from app.services.description_generator import DescriptionGenerator
+    from app.services.document_exporter import export_to_docx, export_to_pdf
+
+    job = _get_job_or_404(db, job_id)
+    _require_job_access(job, current_user)
+
+    description = DescriptionGenerator().get_existing_description(db, job_id)
+    if not description:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"No description found for job {job_id}. "
+                "Call POST /jobs/{job_id}/yaml/description/generate first."
+            ),
+        )
+
+    metadata = {
+        "job_id": job_id,
+        "generated_at": description.generated_at.strftime("%Y-%m-%d %H:%M UTC")
+        if description.generated_at
+        else "",
+        "llm_model": description.llm_model or "",
+    }
+    job_name = (
+        getattr(job, "name", None)
+        or getattr(job, "source_filename", None)
+        or f"job_{job_id}"
+    )
+
+    if format == "docx":
+        buf = export_to_docx(
+            description_text=description.description_text,
+            job_name=job_name,
+            metadata=metadata,
+        )
+        media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        filename = f"yaml_description_job{job_id}.docx"
+    elif format == "pdf":
+        buf = export_to_pdf(
+            description_text=description.description_text,
+            job_name=job_name,
+            metadata=metadata,
+        )
+        media_type = "application/pdf"
+        filename = f"yaml_description_job{job_id}.pdf"
+    else:
+        # Markdown — return raw text
+        buf = BytesIO(description.description_text.encode("utf-8"))
+        media_type = "text/markdown"
+        filename = f"yaml_description_job{job_id}.md"
+
+    return StreamingResponse(
+        buf,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Source (Pick Basic) description generation & download endpoints
+# ─────────────────────────────────────────────────────────────────────────────
+
+class SourceDescriptionGenerateRequest(BaseModel):
+    """Request body for source description generation."""
+    force_regenerate: bool = Field(
+        default=False,
+        description="Re-generate even if a cached description already exists.",
+    )
+
+
+@router.post(
+    "/jobs/{job_id}/source/description/generate",
+    summary="Generate plain-English description from Pick Basic source code",
+    description=(
+        "Uses the LLM to generate a detailed, Markdown-formatted description "
+        "directly from the job's original Pick Basic source code. "
+        "The result is cached; pass force_regenerate=true to overwrite it."
+    ),
+    status_code=status.HTTP_200_OK,
+)
+def generate_source_description(
+    job_id: int,
+    request: SourceDescriptionGenerateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Generate (or regenerate) the plain-English description from source code."""
+    from app.services.source_description_generator import SourceDescriptionGenerator
+    from app.schemas.yaml_schema import SourceDescriptionResponse
+
+    job = _get_job_or_404(db, job_id)
+    _require_job_access(job, current_user)
+
+    description = SourceDescriptionGenerator().generate_description(
+        db=db,
+        job_id=job_id,
+        performed_by=current_user.username,
+        force_regenerate=request.force_regenerate,
+    )
+    return SourceDescriptionResponse.model_validate(description)
+
+
+@router.get(
+    "/jobs/{job_id}/source/description",
+    summary="Get cached source code description",
+    description=(
+        "Returns the previously generated plain-English description for the job's "
+        "Pick Basic source code. Returns 404 if the description has not been "
+        "generated yet — call POST /source/description/generate first."
+    ),
+)
+def get_source_description(
+    job_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Return the cached source description for a job."""
+    from app.services.source_description_generator import SourceDescriptionGenerator
+    from app.schemas.yaml_schema import SourceDescriptionResponse
+
+    job = _get_job_or_404(db, job_id)
+    _require_job_access(job, current_user)
+
+    description = SourceDescriptionGenerator().get_existing_description(db, job_id)
+    if not description:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"No source description found for job {job_id}. "
+                "Call POST /jobs/{job_id}/source/description/generate first."
+            ),
+        )
+    return SourceDescriptionResponse.model_validate(description)
+
+
+@router.get(
+    "/jobs/{job_id}/source/description/download",
+    summary="Download source description as DOCX, PDF, or Markdown",
+    description=(
+        "Streams the cached Pick Basic source description as a formatted Word "
+        "document (.docx), PDF file, or Markdown (.md) file. "
+        "Returns 404 if the description has not been generated yet."
+    ),
+    response_class=StreamingResponse,
+)
+def download_source_description(
+    job_id: int,
+    format: Literal["docx", "pdf", "md"] = Query(
+        default="docx",
+        description="Output format: 'docx' (Word), 'pdf', or 'md' (Markdown).",
+    ),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Stream the source description document as a DOCX, PDF, or Markdown download."""
+    from app.services.source_description_generator import SourceDescriptionGenerator
+    from app.services.document_exporter import export_to_docx, export_to_pdf
+
+    job = _get_job_or_404(db, job_id)
+    _require_job_access(job, current_user)
+
+    description = SourceDescriptionGenerator().get_existing_description(db, job_id)
+    if not description:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"No source description found for job {job_id}. "
+                "Call POST /jobs/{job_id}/source/description/generate first."
+            ),
+        )
+
+    metadata = {
+        "job_id": job_id,
+        "generated_at": description.generated_at.strftime("%Y-%m-%d %H:%M UTC")
+        if description.generated_at
+        else "",
+        "llm_model": description.llm_model or "",
+    }
+    job_name = (
+        getattr(job, "name", None)
+        or getattr(job, "source_filename", None)
+        or f"job_{job_id}"
+    )
+
+    if format == "docx":
+        buf = export_to_docx(
+            description_text=description.description_text,
+            job_name=job_name,
+            metadata=metadata,
+        )
+        media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        filename = f"source_description_job{job_id}.docx"
+    elif format == "pdf":
+        buf = export_to_pdf(
+            description_text=description.description_text,
+            job_name=job_name,
+            metadata=metadata,
+        )
+        media_type = "application/pdf"
+        filename = f"source_description_job{job_id}.pdf"
+    else:
+        # Markdown — return raw text
+        buf = BytesIO(description.description_text.encode("utf-8"))
+        media_type = "text/markdown"
+        filename = f"source_description_job{job_id}.md"
+
+    return StreamingResponse(
+        buf,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Business Requirements Document (BRD) generation & download endpoints
+# ─────────────────────────────────────────────────────────────────────────────
+
+class BRDGenerateRequest(BaseModel):
+    """Request body for BRD generation."""
+    generation_source: Literal["yaml", "source_code"] = Field(
+        default="yaml",
+        description=(
+            "'yaml' — generate BRD from the approved YAML only; "
+            "'source_code' — generate BRD from the original source code only."
+        ),
+    )
+    force_regenerate: bool = Field(
+        default=False,
+        description="Re-generate even if a cached BRD already exists.",
+    )
+
+
+@router.post(
+    "/jobs/{job_id}/brd/generate",
+    summary="Generate Business Requirements Document (BRD) for a job",
+    description=(
+        "Uses the LLM to generate a Business Requirements Document. "
+        "Pass generation_source='yaml' to generate from the approved YAML, "
+        "or 'source_code' to generate from the original source code. "
+        "Each source produces an independent cached record."
+    ),
+    status_code=status.HTTP_200_OK,
+)
+def generate_brd(
+    job_id: int,
+    request: BRDGenerateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Generate (or regenerate) the BRD for a job."""
+    from app.services.brd_generator import BRDGenerator
+    from app.schemas.yaml_schema import BRDResponse
+
+    job = _get_job_or_404(db, job_id)
+    _require_job_access(job, current_user)
+
+    brd = BRDGenerator().generate_brd(
+        db=db,
+        job_id=job_id,
+        performed_by=current_user.username,
+        generation_source=request.generation_source,
+        force_regenerate=request.force_regenerate,
+    )
+    return BRDResponse.model_validate(brd)
+
+
+@router.get(
+    "/jobs/{job_id}/brd",
+    summary="Get cached BRD for a job",
+    description=(
+        "Returns the previously generated BRD filtered by source. "
+        "Pass source='yaml' (default) or source='source_code'. "
+        "Returns 404 if no BRD for that source has been generated yet."
+    ),
+)
+def get_brd(
+    job_id: int,
+    source: Literal["yaml", "source_code"] = Query(
+        default="yaml",
+        description="Which BRD to retrieve: 'yaml' or 'source_code'.",
+    ),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Return the cached BRD for a job and source type."""
+    from app.services.brd_generator import BRDGenerator
+    from app.schemas.yaml_schema import BRDResponse
+
+    job = _get_job_or_404(db, job_id)
+    _require_job_access(job, current_user)
+
+    brd = BRDGenerator().get_existing_brd(db, job_id, source)
+    if not brd:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"No BRD ({source}) found for job {job_id}. "
+                "Call POST /jobs/{job_id}/brd/generate first."
+            ),
+        )
+    return BRDResponse.model_validate(brd)
+
+
+@router.get(
+    "/jobs/{job_id}/brd/download",
+    summary="Download BRD as DOCX, PDF, or Markdown",
+    description=(
+        "Streams the cached BRD as a formatted Word document (.docx), PDF, or "
+        "Markdown (.md). Pass source='yaml' or source='source_code' to select "
+        "which BRD to download."
+    ),
+    response_class=StreamingResponse,
+)
+def download_brd(
+    job_id: int,
+    source: Literal["yaml", "source_code"] = Query(
+        default="yaml",
+        description="Which BRD to download: 'yaml' or 'source_code'.",
+    ),
+    format: Literal["docx", "pdf", "md"] = Query(
+        default="docx",
+        description="Output format: 'docx' (Word), 'pdf', or 'md' (Markdown).",
+    ),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Stream the BRD document as a DOCX, PDF, or Markdown download."""
+    from app.services.brd_generator import BRDGenerator
+    from app.services.document_exporter import export_to_docx, export_to_pdf
+
+    job = _get_job_or_404(db, job_id)
+    _require_job_access(job, current_user)
+
+    brd = BRDGenerator().get_existing_brd(db, job_id, source)
+    if not brd:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=(
+                f"No BRD ({source}) found for job {job_id}. "
+                "Call POST /jobs/{job_id}/brd/generate first."
+            ),
+        )
+
+    metadata = {
+        "job_id": job_id,
+        "generated_at": brd.generated_at.strftime("%Y-%m-%d %H:%M UTC")
+        if brd.generated_at
+        else "",
+        "llm_model": brd.llm_model or "",
+    }
+    job_name = (
+        getattr(job, "name", None)
+        or getattr(job, "source_filename", None)
+        or f"job_{job_id}"
+    )
+
+    if format == "docx":
+        buf = export_to_docx(
+            description_text=brd.brd_text,
+            job_name=job_name,
+            metadata=metadata,
+        )
+        media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        filename = f"brd_{source}_job{job_id}.docx"
+    elif format == "pdf":
+        buf = export_to_pdf(
+            description_text=brd.brd_text,
+            job_name=job_name,
+            metadata=metadata,
+        )
+        media_type = "application/pdf"
+        filename = f"brd_{source}_job{job_id}.pdf"
+    else:
+        buf = BytesIO(brd.brd_text.encode("utf-8"))
+        media_type = "text/markdown"
+        filename = f"brd_{source}_job{job_id}.md"
+
+    return StreamingResponse(
+        buf,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+

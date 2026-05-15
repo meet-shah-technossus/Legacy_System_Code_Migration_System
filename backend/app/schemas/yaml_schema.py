@@ -217,5 +217,61 @@ class YAMLGenerationRequest(BaseModel):
     context_from_review: Optional[str] = Field(None, description="Review comments to consider")
 
 
+class YAMLDescriptionResponse(BaseModel):
+    """Response schema for a generated YAML description document."""
+    id: int
+    job_id: int
+    yaml_version_id: int
+    description_text: str
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
+    generated_by: Optional[str] = None
+    generated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class YAMLDescriptionExistsResponse(BaseModel):
+    """Lightweight check — does a description exist for this job?"""
+    exists: bool
+    description_id: Optional[int] = None
+    generated_at: Optional[datetime] = None
+
+
+class SourceDescriptionResponse(BaseModel):
+    """Response schema for a Pick Basic source description document."""
+    id: int
+    job_id: int
+    description_text: str
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
+    generated_by: Optional[str] = None
+    generated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class BRDResponse(BaseModel):
+    """Response schema for a generated Business Requirements Document (BRD)."""
+    id: int
+    job_id: int
+    yaml_version_id: Optional[int] = None
+    generation_source: str = 'yaml'  # 'yaml' | 'source_code'
+    brd_text: str
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
+    generated_by: Optional[str] = None
+    generated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class BRDExistsResponse(BaseModel):
+    """Lightweight check — does a BRD exist for this job?"""
+    exists: bool
+    brd_id: Optional[int] = None
+    generated_at: Optional[datetime] = None
+
+
 # Enable forward references for recursive LogicFlowNode
 LogicFlowNode.model_rebuild()
